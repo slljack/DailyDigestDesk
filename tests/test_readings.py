@@ -56,3 +56,9 @@ def test_readings_persist_to_disk(tmp_path):
 def test_reading_rejects_malformed_date():
     with pytest.raises(ValidationError):
         Reading(series="fred:DGS10", date="2026-11-3", value=4.98)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "nan"])
+def test_reading_rejects_nan_and_infinity(bad):
+    with pytest.raises(ValidationError):
+        Reading(series="fred:DGS10", date=date(2026, 11, 3), value=bad)

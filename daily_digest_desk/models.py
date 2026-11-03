@@ -56,4 +56,6 @@ class Reading(BaseModel):
 
     series: str                  # "<source>:<native id>", e.g. "fred:DGS10", "finnhub:NVDA"
     date: date                   # the calendar day the value is for
-    value: float
+    # NaN can't be stored (SQLite turns it into NULL), so reject it here
+    # instead of letting INSERT OR IGNORE drop the row silently.
+    value: float = Field(allow_inf_nan=False)
