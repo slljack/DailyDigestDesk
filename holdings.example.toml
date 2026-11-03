@@ -1,0 +1,14 @@
+# Copy to holdings.toml (gitignored) and edit.
+# weight = fraction of portfolio; used later to rank events by relevance.
+
+[[position]]
+ticker = "AAPL"
+weight = 0.20
+
+[[position]]
+ticker = "NVDA"
+weight = 0.15
+
+[[position]]
+ticker = "CLSK"
+weight = 0.05

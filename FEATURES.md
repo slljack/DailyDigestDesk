@@ -1,0 +1,147 @@
+# Features and design decisions
+
+A reference for what's been built, why, and which known XBRL / SEC-data gotchas have been addressed.
+
+The ingestion layer is now a thin wrapper over [edgartools](https://github.com/dgunning/edgartools). edgartools handles the HTTP plumbing (User-Agent, rate limiting, CIK resolution, pagination); we own the semantic-metric layer, dedupe/as-of helpers, and the CLI.
+
+---
+
+## Implemented features
+
+### Ingestion ([edgar.py](daily_digest_desk/ingestion/edgar.py))
+
+| Function | Returns | Purpose |
+|---|---|---|
+| `fetch_filings(ticker, forms, limit)` | `EntityFilings` | List recent filings via `Company.get_filings` |
+| `fetch_document(filing)` | `str` | Plain-text body of a filing (`filing.text()`) |
+| `fetch_section(filing, item)` | `str` | One item section of a 10-K/10-Q (`filing.obj()["Item 1A"]`) |
+| `fetch_company_facts(ticker)` | `EntityFacts` | edgartools facts object, cached per-ticker |
+| `fetch_concept(ticker, tag, unit, taxonomy, as_of)` | `pd.DataFrame` | Time series for one XBRL concept |
+| `fetch_metric(ticker, metric, as_of)` | `(tag, pd.DataFrame)` | Resolve a semantic metric via the concept map |
+| `extract_metric(facts, metric, as_of)` | `(tag, pd.DataFrame)` | Same, against an in-memory facts object |
+| `discover_tags(ticker, keyword)` | `pd.DataFrame` | List concepts the company reports |
+| `latest_per_period(df)` | `pd.DataFrame` | Dedupe to one row per (start, end), latest filing wins |
+
+Column-name constants (`COL_VALUE`, `COL_END`, `COL_START`, `COL_FILED`, `COL_FY`, `COL_FP`, `COL_FORM`, `COL_UNIT`, `COL_CONCEPT`) are exported so callers can reference DataFrame columns symbolically — single point of change if edgartools' schema shifts.
+
+### Concept map ([concept_map.py](daily_digest_desk/ingestion/concept_map.py))
+
+Curated dict of ~13 metric names → ordered XBRL tag candidates. Unchanged in the migration:
+
+`revenue`, `gross_profit`, `operating_income`, `net_income`, `eps_basic`, `eps_diluted`, `assets`, `liabilities`, `equity`, `cash`, `operating_cash_flow`, `capex`, `shares_outstanding`.
+
+`fetch_metric` walks candidates in order, returns the first one with data plus `tag_used` as audit trail.
+
+### CLI ([main.py](daily_digest_desk/main.py))
+
+Four mutually-exclusive modes plus shared flags:
+
+| Mode | Flag | Behavior |
+|---|---|---|
+| Filings | (default) | List recent filings with URLs |
+| Concept | `--concept TAG` | Pull one XBRL tag |
+| Metric | `--metric NAME` | Pull a semantic metric via concept map |
+| Discover | `--discover [KEYWORD]` | List concepts the company reports |
+
+Shared: `--limit`, `--forms`, `--unit`, `--taxonomy`, `--form-filter`, `--dedupe`, `--as-of`.
+
+### Event layer ([events.py](daily_digest_desk/events.py), [store.py](daily_digest_desk/store.py), [collect.py](daily_digest_desk/collect.py))
+
+Foundation for the daily digest. Design decisions:
+
+- **One `Event` model for every source.** Scoring, summarization and output only see Events, so a new source (FRED, Finnhub) is one mapper.
+- **Deterministic ids → idempotent ingestion.** `edgar:<accession>`; `INSERT OR IGNORE`; `store.add()` returns only the new rows. Overlapping fetch windows are safe, so cursors can be coarse (dates, inclusive).
+- **UTC-only timestamps.** `occurred_at` must be tz-aware and is normalized to UTC; stored as ISO strings so SQL string order equals time order.
+- **Per-ticker cursors** (`edgar:<TICKER>`). New tickers get their own lookback; a failing ticker keeps its cursor and is retried next run.
+- **Fetch vs. map split.** `filing_to_event` is pure and unit-tested with fakes; `collect_edgar` takes an injectable fetcher.
+
+Not yet: Form 4 parsing (transaction code P vs S, size), FRED/Finnhub sources, scoring.
+
+### Configuration
+
+- `EDGAR_USER_AGENT` env var → passed to `edgar.set_identity()` on first use.
+- Loaded from `.env` automatically in CLI; library users call `load_dotenv()` themselves.
+
+---
+
+## Caveats addressed
+
+### 1. SEC requires a User-Agent — *handled by edgartools*
+
+`set_identity()` is called once per process from `EDGAR_USER_AGENT`. We raise a clear error if unset rather than silently failing.
+
+### 2. Rate limit (≤10 req/s) — *handled by edgartools*
+
+edgartools' rate limiting is configurable internally. We no longer maintain a hand-rolled token bucket.
+
+### 3. CIK formats differ between endpoints — *handled by edgartools*
+
+`Company(ticker)` resolves to whatever internal representation each endpoint needs.
+
+### 4. XBRL tag names aren't standardized — *resolved (concept_map + audit trail)*
+
+The us-gaap taxonomy is fixed, but **which** tag a company uses for a given economic concept varies (ASC 606 transition, segment granularity, extension tags).
+
+Strategy:
+- **Concept map** — ordered candidate chains for the 13 high-level metrics.
+- **Audit trail** — `fetch_metric` returns `(tag_used, df)` so callers know which tag matched.
+- **`discover_tags()`** — escape hatch for tags outside the curated list, including company-specific extension tags.
+
+### 5. XBRL data has duplicates — *resolved (latest_per_period + --dedupe)*
+
+Three reasons (GAAP comparative columns, Q-vs-YTD, restatements) detailed in the README. Resolution unchanged from pre-migration:
+
+- `period_start` is preserved in the DataFrame (distinguishes 3-month from 9-month spans).
+- `latest_per_period(df)` groups by `(period_start, period_end)` and keeps the latest `filing_date`.
+- CLI `--dedupe` flag, opt-in. Default keeps all rows so restatements remain visible.
+
+### 6. Restatements / lookahead bias — *resolved (--as-of + --dedupe combo)*
+
+`as_of` filters facts where `filing_date <= as_of` *before* dedupe. With `--dedupe` it gives "what was known at that date." Diffing against today's view surfaces restatements programmatically.
+
+### 7. Recent-window pagination — *delegated to edgartools*
+
+edgartools handles paginated submissions internally for `Company.get_filings`. The pre-migration limitation (only seeing the recent window) no longer applies the same way; deeper history is available subject to edgartools' own behavior.
+
+### 8. HTTP redundancy — *resolved (lru_cache layers)*
+
+- `Company(ticker)` cached per-ticker (avoid re-instantiating).
+- `fetch_company_facts(ticker)` cached per-ticker. Multi-metric workflows pay one effective fetch.
+
+In-memory only, no on-disk persistence, will serve stale data if a new filing drops mid-session — documented for awareness.
+
+### 9. Filing section parsing — *now resolved by edgartools*
+
+Pre-migration this was an open caveat (would have required hand-rolling a section parser for 10-K Items). edgartools' `filing.obj()["Item 1A"]` style indexing gives clean section text. Exposed as `fetch_section(filing, item)`. This unlocks the LLM-extraction path in `reasoning/grounding.py` without us building the parser.
+
+---
+
+## Caveats not yet addressed
+
+### Narrative grounding pipeline
+
+[reasoning/grounding.py](daily_digest_desk/reasoning/grounding.py) is still a stub. Plan: pipe `fetch_section(filing, item)` output to Claude for structured claim extraction with citations back to (filing accession, section, span). Use Anthropic's prompt caching: section text as the cacheable system prompt, the extraction query as the variable part.
+
+### Obsidian output
+
+[output/obsidian.py](daily_digest_desk/output/obsidian.py) is still a stub. Planned: write filing summaries / extracted claims as Markdown notes with backlinks for cross-filing navigation.
+
+### Column-schema fragility
+
+We rely on edgartools' DataFrame schema (column names like `numeric_value`, `period_end`, `filing_date`). Centralized via the `COL_*` constants in `edgar.py`, but the assumption is unverified until first run. Verify after first `pip install -e .` and a test query.
+
+---
+
+## Project layout
+
+```
+daily_digest_desk/
+  main.py                 # CLI entry point
+  ingestion/
+    edgar.py              # edgartools wrapper (filings + XBRL + sections)
+    concept_map.py        # Semantic metric -> XBRL tag fallback chains
+  reasoning/
+    grounding.py          # (stub) ground claims in source filings
+  output/
+    obsidian.py           # (stub) write Obsidian notes
+```

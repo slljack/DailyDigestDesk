@@ -1,0 +1,19 @@
+# Secrets / personal
+.env
+holdings.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Local data (SQLite event store, caches)
+data/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
