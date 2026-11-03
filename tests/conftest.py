@@ -2,13 +2,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from daily_digest_desk.events import Event
-from daily_digest_desk.store import EventStore
+from daily_digest_desk.models import Event
+from daily_digest_desk.store import Store
 
 
 @pytest.fixture
 def store():
-    with EventStore(":memory:") as s:
+    with Store(":memory:") as s:
         yield s
 
 

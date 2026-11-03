@@ -1,4 +1,4 @@
-"""Collect new events for the portfolio into the event store.
+"""Collect new events for the portfolio into the store.
 
     desk-collect                                  # holdings.toml -> data/events.db
     desk-collect --holdings my.toml --lookback-days 30
@@ -18,16 +18,16 @@ from datetime import date, timedelta
 
 from dotenv import load_dotenv
 
-from daily_digest_desk.events import Event
+from daily_digest_desk.models import Event
 from daily_digest_desk.holdings import load_holdings
 from daily_digest_desk.ingestion.edgar_events import fetch_edgar_events
-from daily_digest_desk.store import EventStore
+from daily_digest_desk.store import Store
 
 Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
 
 
 def collect_edgar(
-    store: EventStore,
+    store: Store,
     tickers: Iterable[str],
     today: date,
     lookback_days: int = 7,
@@ -68,7 +68,7 @@ def main() -> None:
     args = parser.parse_args()
 
     tickers = [h.ticker for h in load_holdings(args.holdings)]
-    with EventStore(args.db) as store:
+    with Store(args.db) as store:
         new, errors = collect_edgar(store, tickers, date.today(), args.lookback_days)
 
     for e in sorted(new, key=lambda e: e.occurred_at):

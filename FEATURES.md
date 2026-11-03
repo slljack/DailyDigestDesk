@@ -45,7 +45,7 @@ Four mutually-exclusive modes plus shared flags:
 
 Shared: `--limit`, `--forms`, `--unit`, `--taxonomy`, `--form-filter`, `--dedupe`, `--as-of`.
 
-### Event layer ([events.py](daily_digest_desk/events.py), [store.py](daily_digest_desk/store.py), [collect.py](daily_digest_desk/collect.py))
+### Event layer ([models.py](daily_digest_desk/models.py), [store.py](daily_digest_desk/store.py), [collect.py](daily_digest_desk/collect.py))
 
 Foundation for the daily digest. Design decisions:
 
@@ -55,7 +55,9 @@ Foundation for the daily digest. Design decisions:
 - **Per-ticker cursors** (`edgar:<TICKER>`). New tickers get their own lookback; a failing ticker keeps its cursor and is retried next run.
 - **Fetch vs. map split.** `filing_to_event` is pure and unit-tested with fakes; `collect_edgar` takes an injectable fetcher.
 
-Not yet: Form 4 parsing (transaction code P vs S, size), FRED/Finnhub sources, scoring.
+- **Readings** (`Reading` model, `readings` table). Daily values (yields, closing prices) are history, not news; signal rules will turn them into Events. Key is `(series, date)` — no built id, since sources don't provide one. The composite primary key doubles as the index for "series X since date Y" (`EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX`). `add_readings` is first-value-wins, so a later revision of the same day is ignored.
+
+Not yet: Form 4 parsing (transaction code P vs S, size), FRED/Finnhub sources, signal rules, scoring.
 
 ### Configuration
 

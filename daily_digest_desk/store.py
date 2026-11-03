@@ -1,9 +1,11 @@
-"""SQLite event store: idempotent inserts plus per-key fetch cursors.
+"""SQLite store for events and readings: idempotent inserts plus per-key fetch cursors.
 
 Public surface:
-    EventStore(path)
-    store.add(events)                     -> list[Event]  (only the new ones)
+    Store(path)
+    store.add(events)                     -> list[Event]    (only the new ones)
     store.events_since(since, tickers)    -> list[Event]
+    store.add_readings(readings)          -> list[Reading]  (only the new ones)
+    store.readings_since(series, since)   -> list[Reading]
     store.get_cursor(key) / set_cursor(key, value)
 """
 
@@ -12,10 +14,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from daily_digest_desk.events import Event
+from daily_digest_desk.models import Event, Reading
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -32,6 +34,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_occurred_at ON events(occurred_at);
 CREATE INDEX IF NOT EXISTS events_ticker ON events(ticker);
 
+-- One row per (series, date). The primary key also serves as the index for
+-- "series X since date Y", so no extra index is needed.
+CREATE TABLE IF NOT EXISTS readings (
+    series      TEXT NOT NULL,   -- e.g. 'fred:DGS10', 'finnhub:NVDA'
+    date        TEXT NOT NULL,   -- calendar day 'YYYY-MM-DD'; string order == date order
+    value       REAL NOT NULL,
+    inserted_at TEXT NOT NULL,
+    PRIMARY KEY (series, date)
+);
+
 CREATE TABLE IF NOT EXISTS cursors (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -43,7 +55,7 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-class EventStore:
+class Store:
     def __init__(self, path: str | Path = ":memory:"):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +65,7 @@ class EventStore:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> EventStore:
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -102,6 +114,35 @@ class EventStore:
                 title=r[5], url=r[6], fields=json.loads(r[7]),
             )
             for r in self._conn.execute(sql, params)
+        ]
+
+    def add_readings(self, readings: Iterable[Reading]) -> list[Reading]:
+        """Insert readings, skipping (series, date) pairs already stored. Returns only the new ones.
+
+        First value wins: if a source later revises a day's value, the stored one is kept.
+        """
+        now = _iso(datetime.now(timezone.utc))
+        new: list[Reading] = []
+        with self._conn:
+            for r in readings:
+                cur = self._conn.execute(
+                    "INSERT OR IGNORE INTO readings VALUES (?, ?, ?, ?)",
+                    (r.series, r.date.isoformat(), r.value, now),
+                )
+                if cur.rowcount == 1:
+                    new.append(r)
+        return new
+
+    def readings_since(self, series: str, since: date) -> list[Reading]:
+        """Readings for one series with date >= since, oldest first."""
+        rows = self._conn.execute(
+            "SELECT series, date, value FROM readings "
+            "WHERE series = ? AND date >= ? ORDER BY date",
+            (series, since.isoformat()),
+        )
+        return [
+            Reading(series=r[0], date=date.fromisoformat(r[1]), value=r[2])
+            for r in rows
         ]
 
     def get_cursor(self, key: str) -> str | None:

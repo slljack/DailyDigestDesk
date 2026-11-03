@@ -1,12 +1,16 @@
-"""Normalized event model. Every source (EDGAR, FRED, Finnhub) emits Events.
+"""Data models shared across the pipeline.
 
-Downstream layers (scoring, summarization, output) only ever see Events, so
+Event:   one thing that became public (a filing, a data release). Every source emits these.
+Reading: one daily value (a yield, a closing price). Kept as history; signal rules turn
+         changes into Events.
+
+Downstream layers (scoring, summarization, output) only ever see these shapes, so
 adding a source means writing one mapper, not touching the rest of the pipeline.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -38,3 +42,18 @@ class Event(BaseModel):
         if v.tzinfo is None:
             raise ValueError("occurred_at must be timezone-aware")
         return v.astimezone(timezone.utc)
+
+
+class Reading(BaseModel):
+    """One daily value of something that changes constantly (a yield, a closing price).
+
+    Readings are history, not news: they aren't shown on the page directly.
+    Signal rules read them and create Events when something changes.
+    Unique by (series, date), so fetching the same day twice is a no-op in the store.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    series: str                  # "<source>:<native id>", e.g. "fred:DGS10", "finnhub:NVDA"
+    date: date                   # the calendar day the value is for
+    value: float

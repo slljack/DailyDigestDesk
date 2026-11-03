@@ -104,7 +104,7 @@ Output: `<concept>  n=<count>`. Pick a concept from the list, then run `--concep
 
 ## Daily collection (`desk-collect`)
 
-First layer of the daily digest: pull new EDGAR filings for your holdings into a local SQLite event store.
+First layer of the daily digest: pull new EDGAR filings for your holdings into a local SQLite store.
 
 ```bash
 cp holdings.example.toml holdings.toml     # edit tickers/weights (gitignored)
@@ -113,7 +113,7 @@ desk-collect --lookback-days 30         # wider first-run window
 ```
 
 - Watches 8-K (titled by item, e.g. "Earnings results", "Non-reliance on prior financials"), Form 4, 13D/G, 10-Q/10-K, S-3. See `WATCH_FORMS` in [edgar_events.py](daily_digest_desk/ingestion/edgar_events.py).
-- **Idempotent.** Every source emits `Event`s ([events.py](daily_digest_desk/events.py)) with a deterministic id (`edgar:<accession>`); the store ([store.py](daily_digest_desk/store.py)) ignores ids it has seen, so re-running prints only what's new.
+- **Idempotent.** Every source emits `Event`s ([models.py](daily_digest_desk/models.py)) with a deterministic id (`edgar:<accession>`); the store ([store.py](daily_digest_desk/store.py)) ignores ids it has seen, so re-running prints only what's new.
 - **Per-ticker cursors.** Each ticker remembers the date it was last fetched through; a failed ticker keeps its old cursor and retries next run without blocking the others.
 
 ## Tests
@@ -219,8 +219,8 @@ Filters facts where `filing_date <= as_of` *before* dedupe. Combined with `--ded
 daily_digest_desk/
   main.py                 # CLI entry point (`desk`)
   collect.py              # Daily collector (`desk-collect`)
-  events.py               # Normalized Event model (all sources)
-  store.py                # SQLite event store + per-ticker cursors
+  models.py               # Data models: Event, Reading
+  store.py                # SQLite store: events, readings, cursors
   holdings.py             # holdings.toml loader
   ingestion/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)

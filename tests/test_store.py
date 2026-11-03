@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from daily_digest_desk.events import Event
-from daily_digest_desk.store import EventStore
+from daily_digest_desk.models import Event
+from daily_digest_desk.store import Store
 from conftest import make_event
 
 
@@ -65,7 +65,7 @@ def test_cursor_upsert(store):
 
 def test_persists_to_disk(tmp_path):
     path = tmp_path / "sub" / "events.db"
-    with EventStore(path) as s:
+    with Store(path) as s:
         s.add([make_event("edgar:1")])
-    with EventStore(path) as s:
+    with Store(path) as s:
         assert s.add([make_event("edgar:1")]) == []

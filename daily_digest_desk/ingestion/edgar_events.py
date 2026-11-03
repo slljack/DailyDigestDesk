@@ -10,7 +10,7 @@ import logging
 from collections.abc import Iterable
 from datetime import date, datetime, time, timezone
 
-from daily_digest_desk.events import Event
+from daily_digest_desk.models import Event
 from daily_digest_desk.ingestion.edgar import _company
 
 log = logging.getLogger(__name__)
