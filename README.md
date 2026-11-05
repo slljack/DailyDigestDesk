@@ -32,7 +32,10 @@ SEC requires every API caller to identify themselves via `User-Agent`. Put yours
 
 ```
 EDGAR_USER_AGENT=Your Name your@email.com
+FRED_API_KEY=your-32-character-key      # optional; free at https://fred.stlouisfed.org/docs/api/api_key.html
 ```
+
+Without `FRED_API_KEY`, `desk-collect` skips FRED and says so.
 
 `main.py` loads `.env` automatically and passes the value to edgartools' `set_identity()` on first use. If you import the modules from a notebook, call `load_dotenv()` yourself first, or export the variable in your shell.
 
@@ -104,7 +107,7 @@ Output: `<concept>  n=<count>`. Pick a concept from the list, then run `--concep
 
 ## Daily collection (`desk-collect`)
 
-First layer of the daily digest: pull new EDGAR filings for your holdings into a local SQLite store.
+First layer of the daily digest: pull new EDGAR filings for your holdings, plus FRED macro data, into a local SQLite store.
 
 ```bash
 cp holdings.example.toml holdings.toml     # edit tickers/weights (gitignored)
@@ -115,6 +118,7 @@ desk-collect --lookback-days 30         # wider first-run window
 - Watches 8-K (titled by item, e.g. "Earnings results", "Non-reliance on prior financials"), Form 4, 13D/G, 10-Q/10-K, S-3. See `WATCH_FORMS` in [edgar_events.py](daily_digest_desk/ingestion/edgar_events.py).
 - **Idempotent.** Every source emits `Event`s ([models.py](daily_digest_desk/models.py)) with a deterministic id (`edgar:<accession>`); the store ([store.py](daily_digest_desk/store.py)) ignores ids it has seen, so re-running prints only what's new.
 - **Per-ticker cursors.** Each ticker remembers the date it was last fetched through; a failed ticker keeps its old cursor and retries next run without blocking the others.
+- **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
 
 ## Tests
 
@@ -123,7 +127,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run offline: EDGAR mapping uses fake filing objects, and the collector takes an injectable fetcher.
+Tests run offline: EDGAR mapping uses fake filing objects, FRED mapping uses fake observations, and the collectors take an injectable fetcher.
 
 ## Library usage
 
@@ -225,6 +229,7 @@ daily_digest_desk/
   ingestion/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)
     edgar_events.py       # EDGAR filings -> Events (8-K item labels, forms)
+    fred.py               # FRED series -> Readings (daily) and Events (monthly releases)
     concept_map.py        # Semantic metric -> XBRL tag fallback chains
   reasoning/
     grounding.py          # (stub) ground claims in source filings

@@ -57,7 +57,18 @@ Foundation for the daily digest. Design decisions:
 
 - **Readings** (`Reading` model, `readings` table). Daily values (yields, closing prices) are history, not news; signal rules will turn them into Events. Key is `(series, date)` — no built id, since sources don't provide one. The composite primary key doubles as the index for "series X since date Y" (`EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX`). `add_readings` is first-value-wins, so a later revision of the same day is ignored.
 
-Not yet: Form 4 parsing (transaction code P vs S, size), FRED/Finnhub sources, signal rules, scoring.
+### FRED source ([fred.py](daily_digest_desk/ingestion/fred.py), `collect_fred` in [collect.py](daily_digest_desk/collect.py))
+
+- **Two kinds of series.** Daily (`DFF`, `DGS10`, `VIXCLS`) → Readings. Monthly releases (`CPIAUCSL`, `PAYEMS`) → one Event per release with the change vs the prior month (% for CPI, thousands of jobs for payrolls). Event id `fred:<SERIES>:<period>`.
+- **Missing days.** FRED marks them `"."`; the mapper skips them. Anything else non-numeric fails loudly in `Reading`.
+- **Two requests per release.** A normal request returns today's (revised) values, but stamps every row's `realtime_start` with *today*, so it can't tell when a month came out. A second request with `output_type=4` ("initial release only") over the whole real-time history (`realtime_start=1776-07-04`) gives each month's first release day. Values come from the first request, the date from the second. (Found on the first live run: an earlier version read the normal request's `realtime_start` as the release date, and its fake test data had the same wrong assumption built in.)
+- **Only the newest month is news.** One event per release, for the newest month, if it was first released on or after the cursor.
+- **Release time.** FRED gives the release day, not the time; `occurred_at` is the start of that day in New York.
+- **Cursors.** Daily series: the newest date FRED returned, not today, because FRED posts daily values a day or so late. Releases: today. A failed series keeps its cursor.
+- **No new dependency.** Plain `urllib`; the API key is in the URL, and urllib's errors don't include the URL, so the key isn't printed.
+- **Skipped without a key.** `desk-collect` runs EDGAR alone if `FRED_API_KEY` is unset.
+
+Not yet: Form 4 parsing (transaction code P vs S, size), Finnhub source, signal rules, scoring.
 
 ### Configuration
 
