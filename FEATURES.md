@@ -68,7 +68,19 @@ Foundation for the daily digest. Design decisions:
 - **No new dependency.** Plain `urllib`; the API key is in the URL, and urllib's errors don't include the URL, so the key isn't printed.
 - **Skipped without a key.** `desk-collect` runs EDGAR alone if `FRED_API_KEY` is unset.
 
-Not yet: Form 4 parsing (transaction code P vs S, size), Finnhub source, signal rules, scoring.
+### Finnhub source ([finnhub.py](daily_digest_desk/ingestion/finnhub.py), `collect_finnhub` in [collect.py](daily_digest_desk/collect.py))
+
+- **Closing prices as Readings.** One Reading per holding per day, `finnhub:<TICKER>`, value = the quote's `c`. A price is history, not news; signal rules will turn big moves into Events.
+- **Market-hours guard.** `/quote` returns the latest price, which is still moving while the market is open. So a run on a weekday between 9:30 and 16:00 New York stores nothing. Any other time, `c` is the latest close: before the open, it's the previous trading day's; on weekends and holidays, the last trading day's.
+- **Date from `t`, not from the run.** The reading's date is the New York day of the quote's timestamp `t`. A Thursday 8 am run stores Wednesday's close under Wednesday.
+- **`now` in any time zone.** `quote_to_reading` converts `now` to New York before the guard. `main()` passes `datetime.now(timezone.utc)`, and a test checks that a UTC time isn't read as a New York one.
+- **Unknown ticker raises.** For a ticker it doesn't know, Finnhub answers with all zeros (`t = 0`) instead of an error. `fetch_quote` raises `ValueError`, so a typo in holdings shows up as `# ERROR <TICKER>` instead of a reading dated 1969-12-31.
+- **No cursor.** `/quote` has no "since" parameter, and a repeat run's reading has the same `(series, date)` key, so the store ignores it.
+- **One ticker's failure is isolated.** Fetch and mapping both run inside the per-ticker `try`; the error is logged and recorded, and the next ticker runs.
+- **No history on the free tier.** Candles are premium, so a missed day can't be backfilled. Two runs a day (before the open and after the close) give each close two chances.
+- **Skipped without a key.** `desk-collect` skips Finnhub if `FINNHUB_API_KEY` is unset.
+
+Not yet: Form 4 parsing (transaction code P vs S, size), Finnhub earnings (calendar and surprises), signal rules, scoring.
 
 ### Configuration
 

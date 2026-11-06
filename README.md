@@ -1,6 +1,6 @@
 # DailyDigestDesk
 
-Daily investing digest for your portfolio: pull SEC filings (and soon FRED and Finnhub data) → rank what matters → grounded summaries → Obsidian notes.
+Daily investing digest for your portfolio: pull SEC filings, FRED macro data and Finnhub prices → rank what matters → grounded summaries → Obsidian notes.
 
 Built on top of [edgartools](https://github.com/dgunning/edgartools) for SEC ingestion, with a curated semantic-metric layer and CLI on top.
 
@@ -33,9 +33,10 @@ SEC requires every API caller to identify themselves via `User-Agent`. Put yours
 ```
 EDGAR_USER_AGENT=Your Name your@email.com
 FRED_API_KEY=your-32-character-key      # optional; free at https://fred.stlouisfed.org/docs/api/api_key.html
+FINNHUB_API_KEY=your-key                # optional; free at https://finnhub.io/register
 ```
 
-Without `FRED_API_KEY`, `desk-collect` skips FRED and says so.
+Without `FRED_API_KEY` or `FINNHUB_API_KEY`, `desk-collect` skips that source and says so.
 
 `main.py` loads `.env` automatically and passes the value to edgartools' `set_identity()` on first use. If you import the modules from a notebook, call `load_dotenv()` yourself first, or export the variable in your shell.
 
@@ -107,7 +108,7 @@ Output: `<concept>  n=<count>`. Pick a concept from the list, then run `--concep
 
 ## Daily collection (`desk-collect`)
 
-First layer of the daily digest: pull new EDGAR filings for your holdings, plus FRED macro data, into a local SQLite store.
+First layer of the daily digest: pull new EDGAR filings and closing prices for your holdings, plus FRED macro data, into a local SQLite store.
 
 ```bash
 cp holdings.example.toml holdings.toml     # edit tickers/weights (gitignored)
@@ -119,6 +120,7 @@ desk-collect --lookback-days 30         # wider first-run window
 - **Idempotent.** Every source emits `Event`s ([models.py](daily_digest_desk/models.py)) with a deterministic id (`edgar:<accession>`); the store ([store.py](daily_digest_desk/store.py)) ignores ids it has seen, so re-running prints only what's new.
 - **Per-ticker cursors.** Each ticker remembers the date it was last fetched through; a failed ticker keeps its old cursor and retries next run without blocking the others.
 - **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
+- **Finnhub** ([finnhub.py](daily_digest_desk/ingestion/finnhub.py)). Each holding's closing price is stored as a reading (`finnhub:<TICKER>`). A run during market hours (weekdays 9:30–16:00 New York) stores no prices, because the price is still moving; run it before the open or after the close.
 
 ## Tests
 
@@ -127,7 +129,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run offline: EDGAR mapping uses fake filing objects, FRED mapping uses fake observations, and the collectors take an injectable fetcher.
+Tests run offline: EDGAR mapping uses fake filing objects, FRED and Finnhub mapping use fake API responses, and the collectors take an injectable fetcher.
 
 ## Library usage
 
@@ -230,6 +232,7 @@ daily_digest_desk/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)
     edgar_events.py       # EDGAR filings -> Events (8-K item labels, forms)
     fred.py               # FRED series -> Readings (daily) and Events (monthly releases)
+    finnhub.py            # Finnhub quotes -> closing-price Readings
     concept_map.py        # Semantic metric -> XBRL tag fallback chains
   reasoning/
     grounding.py          # (stub) ground claims in source filings

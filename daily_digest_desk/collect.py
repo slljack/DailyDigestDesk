@@ -10,6 +10,10 @@ later starts with a fresh lookback window instead of inheriting others' cursor.
 
 FRED series also have one cursor each (`fred:<SERIES>`). FRED is skipped
 if FRED_API_KEY isn't set.
+
+Finnhub quotes have no cursor: `/quote` only returns the latest price, and a
+repeat run's reading is deduped on (series, date). Finnhub is skipped if
+FINNHUB_API_KEY isn't set.
 """
 
 from __future__ import annotations
@@ -19,20 +23,21 @@ import functools
 import logging
 import os
 from collections.abc import Callable, Iterable
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from typing import Protocol
 
 from dotenv import load_dotenv
 
 from daily_digest_desk.models import Event, Reading
 from daily_digest_desk.holdings import load_holdings
-from daily_digest_desk.ingestion import fred
+from daily_digest_desk.ingestion import fred, finnhub
 from daily_digest_desk.ingestion.edgar_events import fetch_edgar_events
 from daily_digest_desk.store import Store
 
 log = logging.getLogger(__name__)
 
 Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
+FinnhubFetcher = Callable[[str], dict]
 
 
 class FredFetcher(Protocol):
@@ -124,11 +129,38 @@ def collect_fred(
     return new_readings, new_events, errors
 
 
+def collect_finnhub(
+    store: Store,
+    tickers: Iterable[str],
+    now: datetime,
+    fetch: FinnhubFetcher,
+) -> tuple[list[Reading], dict[str, str]]:
+    """Store each ticker's latest close. Returns (new readings, errors by ticker).
+
+    `fetch` is injectable so tests can run without network. During market hours
+    nothing is stored, and that isn't an error.
+    """
+    new_readings: list[Reading] = []
+    errors: dict[str, str] = {}
+
+    for ticker in tickers:
+        try:
+            reading = finnhub.quote_to_reading(ticker, fetch(ticker), now)
+        except Exception as exc:  # noqa: BLE001 — isolate per-ticker failures
+            log.warning("Finnhub failed for %s: %s", ticker, exc)
+            errors[ticker] = str(exc)
+            continue
+        if reading:
+            new_readings.extend(store.add_readings([reading]))
+
+    return new_readings, errors
+
+
 def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-    parser = argparse.ArgumentParser(description="Collect new EDGAR and FRED data for your holdings.")
+    parser = argparse.ArgumentParser(description="Collect new EDGAR, FRED and Finnhub data for your holdings.")
     parser.add_argument("--holdings", default="holdings.toml")
     parser.add_argument("--db", default="data/events.db")
     parser.add_argument(
@@ -139,7 +171,9 @@ def main() -> None:
 
     tickers = [h.ticker for h in load_holdings(args.holdings)]
     fred_key = os.environ.get("FRED_API_KEY")
+    finnhub_key = os.environ.get("FINNHUB_API_KEY")
     readings: list[Reading] = []
+    finnhub_readings: list[Reading] = []
     with Store(args.db) as store:
         new, errors = collect_edgar(store, tickers, date.today(), args.lookback_days)
         if fred_key:
@@ -147,6 +181,10 @@ def main() -> None:
             readings, fred_events, fred_errors = collect_fred(store, date.today(), fetch)
             new += fred_events
             errors.update(fred_errors)
+        if finnhub_key:
+            fetch = functools.partial(finnhub.fetch_quote, api_key=finnhub_key)
+            finnhub_readings, finnhub_errors = collect_finnhub(store, tickers, datetime.now(timezone.utc), fetch)
+            errors.update(finnhub_errors)
 
     for e in sorted(new, key=lambda e: e.occurred_at):
         print(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
@@ -155,6 +193,10 @@ def main() -> None:
         print(f"# {len(readings)} new FRED reading(s)")
     else:
         print("# FRED skipped: set FRED_API_KEY in .env")
+    if finnhub_key:
+        print(f"# {len(finnhub_readings)} new Finnhub reading(s)")
+    else:
+        print("# FINNHUB skipped: set FINNHUB_API_KEY in .env")
     for key, msg in errors.items():
         print(f"# ERROR {key}: {msg}")
 
