@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from daily_digest_desk.models import Event, Reading
@@ -30,6 +30,7 @@ _NEW_YORK = ZoneInfo("America/New_York")
 _MARKET_OPEN = time(9, 30)
 _MARKET_CLOSE = time(16, 0)
 _HEADS_UP_DAYS = 7
+_LOOKBACK_DAYS = 7   # how far back to keep checking for late actuals
 # Finnhub only says before open / after close; typical times, for sorting
 _REPORT_TIME = {"bmo": time(8, 0), "amc": time(16, 0)}
 _REPORT_HOUR_WORDS = {
@@ -57,6 +58,24 @@ def fetch_quote(ticker: str, api_key: str) -> dict:
         if quote["t"] == 0:
             raise ValueError(f"Finnhub has no quote for {ticker!r} (unknown ticker?)")
         return quote
+
+
+def fetch_earnings(ticker: str, today: date, api_key: str) -> list[dict]:
+    """Finnhub's earnings-calendar rows for one ticker, from a week ago to a week ahead.
+
+    An unknown ticker gives an empty list, not an error.
+    """
+    params = {
+        "symbol": ticker,
+        "token": api_key,
+        "from": (today - timedelta(days=_LOOKBACK_DAYS)).isoformat(),
+        "to": (today + timedelta(days=_HEADS_UP_DAYS)).isoformat(),
+    }
+
+    query = urllib.parse.urlencode(params)
+    with urllib.request.urlopen(f"{_API_BASE}/calendar/earnings?{query}", timeout=30) as resp:
+        earnings = json.load(resp)
+        return earnings["earningsCalendar"]
 
 
 def quote_to_reading(ticker: str, quote: dict, now: datetime) -> Reading | None:
@@ -122,7 +141,7 @@ def earnings_to_event(row: dict, today: date) -> Event | None:
                 "fiscal_quarter": row["quarter"],
             },
         )
-    
+
     if today > report_day:
         return None  # reported, but Finnhub hasn't filled in actuals yet; a later run retries
     if (report_day - today).days > _HEADS_UP_DAYS:
@@ -132,7 +151,7 @@ def earnings_to_event(row: dict, today: date) -> Event | None:
         title = f"{row['symbol']} is reporting earnings on {report_day:%b %d} {when} (no analyst estimate)"
     else:
         title = f"{row['symbol']} is reporting earnings on {report_day:%b %d} {when}, EPS {row['epsEstimate']:.2f} expected"
-    
+
     return Event(
         id=f"{report_id}:headsup",
         source="finnhub",

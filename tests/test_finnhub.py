@@ -4,9 +4,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from daily_digest_desk.collect import collect_finnhub
+from daily_digest_desk.collect import collect_finnhub, collect_finnhub_earnings
 from daily_digest_desk.ingestion import finnhub
-from daily_digest_desk.ingestion.finnhub import fetch_quote, quote_to_reading, earnings_to_event
+from daily_digest_desk.ingestion.finnhub import (
+    earnings_to_event, fetch_earnings, fetch_quote, quote_to_reading,
+)
 
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -15,6 +17,20 @@ NEW_YORK = ZoneInfo("America/New_York")
 QUOTE = {"c": 200.13, "d": -6.56, "dp": -3.1738, "h": 206.79, "l": 199.68,
          "o": 203.5, "pc": 206.69, "t": 1793826000}
 
+# Real earnings-calendar rows from Finnhub, fetched 2026-11-06.
+# IREN reported Nov 5 after the close; NVDA reports Nov 17 after the close.
+IREN_ROW = {"symbol": "IREN", "date": "2026-11-05", "hour": "amc", "quarter": 1, "year": 2027,
+            "epsEstimate": -0.6789, "epsActual": -0.62,
+            "revenueEstimate": 227655136, "revenueActual": 228000000}
+NVDA_ROW = {"symbol": "NVDA", "date": "2026-11-17", "hour": "amc", "quarter": 3, "year": 2027,
+            "epsEstimate": 2.5263, "epsActual": None,
+            "revenueEstimate": 111356225808, "revenueActual": None}
+
+# What the calendar returns per ticker, for the collector tests.
+EARNINGS = {"IREN": [IREN_ROW], "NVDA": [NVDA_ROW]}
+
+
+# --- quote_to_reading ------------------------------------------------------------------
 
 def test_quote_before_open_is_previous_days_close():
     now = datetime(2026, 11, 5, 8, 0, tzinfo=NEW_YORK)
@@ -51,6 +67,98 @@ def test_now_in_utc_is_converted_to_new_york():
     # 20:00 UTC is 3 pm in New York: market open. Read as 20:00 it would look closed.
     now = datetime(2026, 11, 4, 20, 0, tzinfo=timezone.utc)
     assert quote_to_reading("NVDA", QUOTE, now) is None
+
+
+# --- earnings_to_event -----------------------------------------------------------------
+
+def test_result_beat_with_negative_eps():
+    today = date(2026, 11, 6)
+    event = earnings_to_event(IREN_ROW, today)
+    assert event is not None
+    assert event.kind == "earnings_result"
+    assert event.id == "finnhub:earnings:IREN:2027Q1:result"
+    assert event.occurred_at == datetime(2026, 11, 5, 16, 0, tzinfo=NEW_YORK)
+    assert "beat" in event.title
+
+
+def test_result_matched_after_rounding():
+    today = date(2026, 11, 6)
+    row = {**IREN_ROW, "epsActual": 2.53, "epsEstimate": 2.5263}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert "matched" in event.title
+
+
+def test_result_missed():
+    today = date(2026, 11, 6)
+    row = {**IREN_ROW, "epsActual": 2.30, "epsEstimate": 2.5263}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert "missed" in event.title
+
+
+def test_result_no_analyst_estimate():
+    today = date(2026, 11, 6)
+    row = {**IREN_ROW, "epsEstimate": None}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert "no analyst estimate" in event.title
+
+
+def test_headsup_seven_days_before_report():
+    today = date(2026, 11, 10)
+    event = earnings_to_event(NVDA_ROW, today)
+    assert event is not None
+    assert event.kind == "earnings_headsup"
+    assert event.id == "finnhub:earnings:NVDA:2027Q3:headsup"
+    assert event.occurred_at == datetime(2026, 11, 10, 0, 0, tzinfo=NEW_YORK)
+    assert "Nov 17" in event.title
+
+
+def test_no_headsup_eight_days_before_report():
+    today = date(2026, 11, 9)
+    event = earnings_to_event(NVDA_ROW, today)
+    assert event is None
+
+
+def test_no_event_after_report_without_actuals():
+    today = date(2026, 11, 18)
+    event = earnings_to_event(NVDA_ROW, today)
+    assert event is None
+
+
+def test_headsup_on_report_day():
+    # A ticker first seen on report day still gets a heads-up before the results arrive.
+    today = date(2026, 11, 17)
+    event = earnings_to_event(NVDA_ROW, today)
+    assert event is not None
+    assert event.kind == "earnings_headsup"
+
+
+def test_headsup_with_no_estimate():
+    today = date(2026, 11, 10)
+    row = {**NVDA_ROW, "epsEstimate": None}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert "no analyst estimate" in event.title
+    assert "Nov 17" in event.title
+
+
+def test_result_without_report_hour_is_dated_midnight():
+    # Finnhub sometimes leaves "hour" empty (seen for ACA on 2026-10-30).
+    today = date(2026, 11, 6)
+    row = {**IREN_ROW, "hour": ""}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert event.occurred_at == datetime(2026, 11, 5, 0, 0, tzinfo=NEW_YORK)
+
+
+def test_headsup_without_report_hour_says_time_not_announced():
+    today = date(2026, 11, 10)
+    row = {**NVDA_ROW, "hour": ""}
+    event = earnings_to_event(row, today)
+    assert event is not None
+    assert "(time not announced)" in event.title
 
 
 # --- fetch (network replaced) ----------------------------------------------------------
@@ -93,9 +201,20 @@ def test_fetch_quote_unknown_ticker_raises(fake_finnhub):
         fetch_quote("NVDAA", api_key="test-key")
 
 
-# --- collector -----------------------------------------------------------------------
+def test_fetch_earnings_sends_window_and_returns_rows(fake_finnhub):
+    fake_finnhub["body"] = {"earningsCalendar": [IREN_ROW]}
+    rows = fetch_earnings("IREN", date(2026, 11, 8), api_key="test-key")
+    assert rows == [IREN_ROW]
+    url = fake_finnhub["url"]
+    assert "/calendar/earnings?" in url
+    assert "symbol=IREN" in url
+    assert "from=2026-11-01" in url               # today - 7 days
+    assert "to=2026-11-15" in url                 # today + 7 days
 
-class FakeFinnhub:
+
+# --- collectors ------------------------------------------------------------------------
+
+class FakeFinnhubQuotes:
     """Stands in for fetch_quote with the key filled in: QUOTE for every ticker, or raises."""
 
     def __init__(self, failing=()):
@@ -110,7 +229,7 @@ class FakeFinnhub:
 
 
 def test_tickers_become_stored_readings_after_close(store):
-    fetch = FakeFinnhub()
+    fetch = FakeFinnhubQuotes()
     now = datetime(2026, 11, 4, 17, 0, tzinfo=NEW_YORK)
     readings, errors = collect_finnhub(store, ["NVDA"], now, fetch)
     assert [r.series for r in readings] == ["finnhub:NVDA"]
@@ -118,7 +237,7 @@ def test_tickers_become_stored_readings_after_close(store):
 
 
 def test_one_failing_ticker_does_not_stop_others(store):
-    fetch = FakeFinnhub(failing={"NVDA"})
+    fetch = FakeFinnhubQuotes(failing={"NVDA"})
     now = datetime(2026, 11, 4, 17, 0, tzinfo=NEW_YORK)
     readings, errors = collect_finnhub(store, ["NVDA", "AAPL"], now, fetch)
     assert [r.series for r in readings] == ["finnhub:AAPL"]
@@ -126,69 +245,58 @@ def test_one_failing_ticker_does_not_stop_others(store):
 
 
 def test_market_hours_store_nothing(store):
-    fetch = FakeFinnhub()
+    fetch = FakeFinnhubQuotes()
     now = datetime(2026, 11, 4, 15, 0, tzinfo=NEW_YORK)
     readings, errors = collect_finnhub(store, ["NVDA", "AAPL"], now, fetch)
     assert readings == []
     assert errors == {}
 
 
-    # --- earnings_to_event -----------------------------------------------------------------------
+class FakeFinnhubEarnings:
+    """Stands in for fetch_earnings with the key filled in: the given rows per ticker, or raises."""
 
-# Real earnings-calendar rows from Finnhub, fetched 2026-11-06.
-# IREN reported Nov 5 after the close; NVDA reports Nov 17 after the close.
-IREN_ROW = {"symbol": "IREN", "date": "2026-11-05", "hour": "amc", "quarter": 1, "year": 2027,
-            "epsEstimate": -0.6789, "epsActual": -0.62,
-            "revenueEstimate": 227655136, "revenueActual": 228000000}
-NVDA_ROW = {"symbol": "NVDA", "date": "2026-11-17", "hour": "amc", "quarter": 3, "year": 2027,
-            "epsEstimate": 2.5263, "epsActual": None,
-            "revenueEstimate": 111356225808, "revenueActual": None}
+    def __init__(self, rows, failing=()):
+        self.rows = rows
+        self.failing = set(failing)
 
-def test_result_beat_with_negative_eps():
-    today = date(2026, 11, 6)
-    event = earnings_to_event(IREN_ROW, today)
-    assert event is not None
-    assert event.kind == "earnings_result"
-    assert event.id == "finnhub:earnings:IREN:2027Q1:result"
-    assert event.occurred_at == datetime(2026, 11, 5, 16, 0, tzinfo=NEW_YORK)
-    assert "beat" in event.title
+    def __call__(self, ticker, today):
+        if ticker in self.failing:
+            raise OSError("boom")
+        return self.rows.get(ticker, [])
 
-def test_result_matched_after_rounding():
-    today = date(2026, 11, 6)
-    row = {**IREN_ROW, "epsActual": 2.53, "epsEstimate": 2.5263 }
-    event = earnings_to_event(row, today)
-    assert event is not None
-    assert "matched" in event.title
 
-def test_no_analyst_estimate():
-    today = date(2026, 11, 6)
-    row = {**IREN_ROW, "epsEstimate": None }
-    event = earnings_to_event(row, today)
-    assert event is not None
-    assert "no analyst estimate" in event.title
-
-def test_headsup_seven_days_before_report():
+def test_earnings_collector_stores_new_events(store):
+    fetch = FakeFinnhubEarnings(EARNINGS)
     today = date(2026, 11, 10)
-    event = earnings_to_event(NVDA_ROW, today)
-    assert event is not None
-    assert event.kind == "earnings_headsup"
-    assert event.id == "finnhub:earnings:NVDA:2027Q3:headsup"
-    assert event.occurred_at == datetime(2026, 11, 10, 0, 0, tzinfo=NEW_YORK)
-    assert "Nov 17" in event.title
+    events, errors = collect_finnhub_earnings(store, ["NVDA", "IREN"], today, fetch)
+    assert [e.id for e in events] == [
+        "finnhub:earnings:NVDA:2027Q3:headsup",
+        "finnhub:earnings:IREN:2027Q1:result",
+    ]
+    assert errors == {}
 
-def test_no_headsup_eight_days_before_report():
-    today = date(2026, 11, 9)
-    event = earnings_to_event(NVDA_ROW, today)
-    assert event is None
 
-def test_no_event_after_report_without_actuals():
-    today = date(2026, 11, 18)
-    event = earnings_to_event(NVDA_ROW, today)
-    assert event is None
+def test_earnings_collector_skips_rows_too_early(store):
+    fetch = FakeFinnhubEarnings(EARNINGS)
+    today = date(2026, 11, 8)
+    events, errors = collect_finnhub_earnings(store, ["NVDA", "IREN"], today, fetch)
+    assert [e.id for e in events] == ["finnhub:earnings:IREN:2027Q1:result"]
+    assert errors == {}
 
-def test_headsup_on_report_day():
-    # A ticker first seen on report day still gets a heads-up before the results arrive.
-    today = date(2026, 11, 17)
-    event = earnings_to_event(NVDA_ROW, today)
-    assert event is not None
-    assert event.kind == "earnings_headsup"
+
+def test_earnings_one_failing_ticker_does_not_stop_others(store):
+    fetch = FakeFinnhubEarnings(EARNINGS, failing={"NVDA"})
+    today = date(2026, 11, 10)
+    events, errors = collect_finnhub_earnings(store, ["NVDA", "IREN"], today, fetch)
+    assert [e.id for e in events] == ["finnhub:earnings:IREN:2027Q1:result"]
+    assert errors == {"NVDA": "boom"}
+
+
+def test_earnings_ticker_with_a_broken_row_stores_nothing(store):
+    good = {**IREN_ROW, "symbol": "NVDA"}            # a valid result row for NVDA
+    broken = {**NVDA_ROW, "date": "not-a-date"}      # makes date.fromisoformat raise
+    fetch = FakeFinnhubEarnings({"NVDA": [good, broken], "IREN": [IREN_ROW]})
+    today = date(2026, 11, 8)
+    events, errors = collect_finnhub_earnings(store, ["NVDA", "IREN"], today, fetch)
+    assert [e.id for e in events] == ["finnhub:earnings:IREN:2027Q1:result"]
+    assert list(errors) == ["NVDA"]

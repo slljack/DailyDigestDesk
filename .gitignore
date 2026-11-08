@@ -17,3 +17,7 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# coverage
+.coverage
+htmlcov/

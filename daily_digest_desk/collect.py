@@ -12,8 +12,9 @@ FRED series also have one cursor each (`fred:<SERIES>`). FRED is skipped
 if FRED_API_KEY isn't set.
 
 Finnhub quotes have no cursor: `/quote` only returns the latest price, and a
-repeat run's reading is deduped on (series, date). Finnhub is skipped if
-FINNHUB_API_KEY isn't set.
+repeat run's reading is deduped on (series, date). Finnhub earnings have no
+cursor either: each run checks a window from a week ago to a week ahead, and
+the store dedupes on event id. Finnhub is skipped if FINNHUB_API_KEY isn't set.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 
 Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
 FinnhubFetcher = Callable[[str], dict]
+EarningsFetcher = Callable[[str, date], list[dict]]
 
 
 class FredFetcher(Protocol):
@@ -154,6 +156,36 @@ def collect_finnhub(
             new_readings.extend(store.add_readings([reading]))
 
     return new_readings, errors
+
+def collect_finnhub_earnings(
+    store: Store,
+    tickers: Iterable[str],
+    today: date,
+    fetch: EarningsFetcher,
+) -> tuple[list[Event], dict[str, str]]:
+    """Store earnings heads-ups and results. Returns (new events, errors by ticker).
+
+    `fetch` is injectable so tests can run without network. A ticker whose rows
+    fail to fetch or map stores nothing, so it's retried whole on the next run.
+    """
+    new_events: list[Event] = []
+    errors: dict[str, str] = {}
+
+    for ticker in tickers:
+        try:
+            rows = fetch(ticker, today)
+            events: list[Event] = []
+            for row in rows:
+                event = finnhub.earnings_to_event(row, today)
+                if event is not None:
+                    events.append(event)
+        except Exception as exc:  # noqa: BLE001 — isolate per-ticker failures
+            log.warning("Finnhub earnings failed for %s: %s", ticker, exc)
+            errors[ticker] = str(exc)
+            continue
+        new_events.extend(store.add(events))
+
+    return new_events, errors
 
 
 def main() -> None:
