@@ -15,6 +15,9 @@ Finnhub quotes have no cursor: `/quote` only returns the latest price, and a
 repeat run's reading is deduped on (series, date). Finnhub earnings have no
 cursor either: each run checks a window from a week ago to a week ahead, and
 the store dedupes on event id. Finnhub is skipped if FINNHUB_API_KEY isn't set.
+
+A failure in one ticker or series doesn't stop the run. Anything that failed is
+listed as `# ERROR ...` at the end, and the exit code is 1.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import argparse
 import functools
 import logging
 import os
+import sys
 from collections.abc import Callable, Iterable
 from datetime import date, timedelta, datetime, timezone
 from typing import Protocol
@@ -101,7 +105,8 @@ def collect_fred(
 
     for series_id in fred.DAILY_SERIES:
         try:
-            readings = fred.observations_to_readings(series_id, fetch(series_id, since_for(series_id)))
+            observations = fetch(series_id, since_for(series_id))
+            readings = fred.observations_to_readings(series_id, observations)
         except Exception as exc:  # noqa: BLE001 — isolate per-series failures
             log.warning("FRED fetch failed for %s: %s", series_id, exc)
             errors[series_id] = str(exc)
@@ -157,6 +162,7 @@ def collect_finnhub(
 
     return new_readings, errors
 
+
 def collect_finnhub_earnings(
     store: Store,
     tickers: Iterable[str],
@@ -192,7 +198,9 @@ def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-    parser = argparse.ArgumentParser(description="Collect new EDGAR, FRED and Finnhub data for your holdings.")
+    parser = argparse.ArgumentParser(
+        description="Collect new EDGAR, FRED and Finnhub data for your holdings.",
+    )
     parser.add_argument("--holdings", default="holdings.toml")
     parser.add_argument("--db", default="data/events.db")
     parser.add_argument(
@@ -204,33 +212,49 @@ def main() -> None:
     tickers = [h.ticker for h in load_holdings(args.holdings)]
     fred_key = os.environ.get("FRED_API_KEY")
     finnhub_key = os.environ.get("FINNHUB_API_KEY")
-    readings: list[Reading] = []
-    finnhub_readings: list[Reading] = []
+    fred_readings: list[Reading] = []
+    quotes_readings: list[Reading] = []
+    earnings_events: list[Event] = []
+    errors: dict[str, dict[str, str]] = {}  # source -> {ticker or series: message}
+    today = date.today()  # one date for every collector, even if the run crosses midnight
     with Store(args.db) as store:
-        new, errors = collect_edgar(store, tickers, date.today(), args.lookback_days)
+        new, edgar_errors = collect_edgar(store, tickers, today, args.lookback_days)
+        errors["edgar"] = edgar_errors
         if fred_key:
-            fetch = functools.partial(fred.fetch_observations, api_key=fred_key)
-            readings, fred_events, fred_errors = collect_fred(store, date.today(), fetch)
+            fetch_fred = functools.partial(fred.fetch_observations, api_key=fred_key)
+            fred_readings, fred_events, fred_errors = collect_fred(store, today, fetch_fred)
             new += fred_events
-            errors.update(fred_errors)
+            errors["fred"] = fred_errors
         if finnhub_key:
-            fetch = functools.partial(finnhub.fetch_quote, api_key=finnhub_key)
-            finnhub_readings, finnhub_errors = collect_finnhub(store, tickers, datetime.now(timezone.utc), fetch)
-            errors.update(finnhub_errors)
+            now = datetime.now(timezone.utc)
+            fetch_quote = functools.partial(finnhub.fetch_quote, api_key=finnhub_key)
+            quotes_readings, quotes_errors = collect_finnhub(store, tickers, now, fetch_quote)
+            errors["finnhub_quotes"] = quotes_errors
+
+            fetch_earnings = functools.partial(finnhub.fetch_earnings, api_key=finnhub_key)
+            earnings_events, earnings_errors = collect_finnhub_earnings(
+                store, tickers, today, fetch_earnings,
+            )
+            new += earnings_events
+            errors["finnhub_earnings"] = earnings_errors
 
     for e in sorted(new, key=lambda e: e.occurred_at):
         print(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
     print(f"# {len(new)} new event(s)")
     if fred_key:
-        print(f"# {len(readings)} new FRED reading(s)")
+        print(f"# {len(fred_readings)} new FRED reading(s)")
     else:
         print("# FRED skipped: set FRED_API_KEY in .env")
     if finnhub_key:
-        print(f"# {len(finnhub_readings)} new Finnhub reading(s)")
+        print(f"# {len(quotes_readings)} new Finnhub quote reading(s)")
+        print(f"# {len(earnings_events)} new Finnhub earnings event(s), included above")
     else:
-        print("# FINNHUB skipped: set FINNHUB_API_KEY in .env")
-    for key, msg in errors.items():
-        print(f"# ERROR {key}: {msg}")
+        print("# Finnhub skipped: set FINNHUB_API_KEY in .env")
+    for source, source_errors in errors.items():
+        for name, msg in source_errors.items():
+            print(f"# ERROR {source} {name}: {msg}")
+    if any(errors.values()):
+        sys.exit(1)  # so a scheduler can tell the run had failures
 
 
 if __name__ == "__main__":
