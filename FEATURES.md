@@ -57,7 +57,7 @@ Foundation for the daily digest. Design decisions:
 - **Errors grouped by source.** `main()` keeps one errors dict per source (`errors["edgar"]`, `errors["finnhub_earnings"]`, …), so NVDA failing in two sources keeps both messages instead of the second overwriting the first. Each prints as `# ERROR <source> <ticker or series>: <message>`, and the run exits 1 if anything failed, so a scheduler can tell.
 - **One `today` per run.** `main()` reads the date once and passes it to every collector, so a run that crosses midnight doesn't mix two dates.
 
-- **Readings** (`Reading` model, `readings` table). Daily values (yields, closing prices) are history, not news; signal rules will turn them into Events. Key is `(series, date)` — no built id, since sources don't provide one. The composite primary key doubles as the index for "series X since date Y" (`EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX`). `add_readings` is first-value-wins, so a later revision of the same day is ignored.
+- **Readings** (`Reading` model, `readings` table). Daily values (yields, closing prices) are history, not news; signal rules turn them into Events. Key is `(series, date)` — no built id, since sources don't provide one. The composite primary key doubles as the index for "series X since date Y" (`EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX`). `add_readings` is first-value-wins, so a later revision of the same day is ignored.
 
 ### FRED source ([fred.py](daily_digest_desk/ingestion/fred.py), `collect_fred` in [collect.py](daily_digest_desk/collect.py))
 
@@ -74,7 +74,7 @@ Foundation for the daily digest. Design decisions:
 
 Quotes:
 
-- **Closing prices as Readings.** One Reading per holding per day, `finnhub:<TICKER>`, value = the quote's `c`. A price is history, not news; signal rules will turn big moves into Events.
+- **Closing prices as Readings.** One Reading per holding per day, `finnhub:<TICKER>`, value = the quote's `c`. A price is history, not news; signal rules turn big moves into Events.
 - **Market-hours guard.** `/quote` returns the latest price, which is still moving while the market is open. So a run on a weekday between 9:30 and 16:00 New York stores nothing. Any other time, `c` is the latest close: before the open, it's the previous trading day's; on weekends and holidays, the last trading day's.
 - **Date from `t`, not from the run.** The reading's date is the New York day of the quote's timestamp `t`. A Thursday 8 am run stores Wednesday's close under Wednesday.
 - **`now` in any time zone.** `quote_to_reading` converts `now` to New York before the guard. `main()` passes `datetime.now(timezone.utc)`, and a test checks that a UTC time isn't read as a New York one.
@@ -96,7 +96,32 @@ Earnings (`/calendar/earnings`):
 - **All or nothing per ticker.** A ticker's rows are all mapped before any are stored, so one broken row stores nothing for that ticker, and the whole ticker is retried next run.
 - **Free-tier limit.** About a month of history, so missed reports can't be backfilled far. The url is the company's EDGAR filing list; Finnhub has no page per report.
 
-Not yet: Form 4 parsing (transaction code P vs S, size), signal rules, scoring.
+### Signals ([signals.py](daily_digest_desk/signals.py), `collect_signals` in [collect.py](daily_digest_desk/collect.py))
+
+v1 has one rule, the **big move**: a reading compared with the one before it in the same series.
+
+| Series | Threshold | Why |
+|---|---|---|
+| `fred:DGS10` 10-year yield | 0.10 points | a normal day is ~0.04 |
+| `fred:DFF` Fed funds rate | 0.20 points | it only moves when the Fed does |
+| `fred:VIXCLS` VIX | 3 points | a normal day is ~0.6 |
+| `finnhub:<TICKER>` each holding | 5% | same for every holding in v1 |
+
+- **Rules are data.** A `BigMove` holds the series, the title name, the threshold, and whether the move is in points (`diff`) or percent (`pct`). Macro rules are a fixed list, `MACRO_RULES`; stock rules are built from the holdings by `stock_rules(tickers)`. Thresholds are roughly 3–5× a normal day's move on Oct–Nov 2026 data, to be tuned after a few weeks of digests.
+- **Pure rule, separate collector.** `big_move_event(rule, previous, latest)` has no store and no network, so its tests are just two readings. `collect_signals` does the store work: it finds each reading's previous and stores the event.
+- **Rounded before the check.** 5.00 − 4.90 is 0.09999999999999964 in floats; rounding to 2 decimals first means it fires at 0.10, matching the title. Two tests (one diff, one pct) fail if the rounding is removed.
+- **Up and down both count.** The threshold is checked against the size of the move; the title says `up` or `down`, and `fields["move"]` keeps the sign.
+- **No percent change from 0.** A `pct` rule with a previous value of 0 returns nothing. `diff` rules have no division, so Fed funds going from 0 to 0.25 still fires.
+- **Titles.** "10-year Treasury yield up 0.12 points to 5.10%", "VIX down 5.72 points to 19.92", "NVDA down 6.21% to $187.40". The url is the FRED series page for macro rules and the Yahoo quote page for stocks.
+- **Missed runs are named.** A stock's close is only stored by a run, so after days with no run, the previous close can be a week old. If the previous reading is more than 4 days back (longer than Friday to Tuesday over a holiday), the title says so: "NVDA down 12.75% since Nov 6 to $162.85".
+- **Id and date.** `signal:big_move:<series>:<date>`, dated 16:00 New York on the reading's day, so a rerun makes the same id and the store ignores it.
+- **Runs last, on this run's new readings.** `main()` calls `collect_signals` after the FRED and Finnhub collectors have stored their readings, so a backlog (Thursday and Friday arriving together on Monday) compares Friday with Thursday.
+- **Previous from the store.** The newest stored reading before this one, within 10 days. None found (a holding's first day) → no event.
+- **Only the past week is checked.** A first run backfills weeks of FRED history, and a big move from three weeks ago isn't news. Readings older than 7 days are stored but not checked, so they can still be the previous reading for a newer one. The cost: after more than a week with no runs, the moves in that gap are never reported.
+- **No rule is not an error.** A series kept only as history (a benchmark, or a series whose rule isn't written yet) is skipped.
+- **One reading's failure is isolated.** It's recorded as `# ERROR signals <series> <date>: <message>`, and the other readings are still checked.
+
+Not yet: Form 4 parsing (transaction code P vs S, size), scoring, more signal rules (see "Planned signals" below).
 
 ### Configuration
 
@@ -170,6 +195,21 @@ Pre-migration this was an open caveat (would have required hand-rolling a sectio
 ### Column-schema fragility
 
 We rely on edgartools' DataFrame schema (column names like `numeric_value`, `period_end`, `filing_date`). Centralized via the `COL_*` constants in `edgar.py`, but the assumption is unverified until first run. Verify after first `pip install -e .` and a test query.
+
+---
+
+## Planned signals (after the big move)
+
+The big move (one series, today vs the previous reading) is the first rule. These come after it. The numbers are starting points, to be checked against real data when each one is built.
+
+- **More maturities: DGS2, the 2-year Treasury yield.** It reacts most to what the market expects the Fed to do next; the 10-year reacts more to long-run growth and inflation. It needs to go into both `fred.DAILY_SERIES` and `MACRO_RULES`. Other maturities (1-year, 5-year) mostly move with these two, so they'd fire on the same days.
+- **Crossing rules, a second rule type.** The news is a level being crossed, not a big one-day change, so `BigMove` can't express it. Avoiding a repeat event every day while the level stays crossed is an open design question.
+  - **Yield curve, `T10Y2Y`** (the 10-year yield minus the 2-year, on FRED). It's normally positive: lending for longer pays more. Below zero is an "inversion", a well-known recession warning. It was inverted from mid-2022 to late 2024. Crossing in either direction is news. It's a warning, not a timing tool.
+  - **VIX above 30.** VIX's long-run average is about 20, so crossing 20 happens too often to be news. Above 30 is market stress.
+- **Multi-day drift.** For example, down 10% or more over a week with no single 5% day. The window is per rule, which the big move put off for v1.
+- **Big move right after earnings.** Link a stock's big move to that ticker's earnings result from the day before or the same day: "NVDA down 8% the day after earnings". This gives context, not just a number.
+- **Compared with the market.** NVDA −5% means less on a day the whole market fell 4%. Store a benchmark (SPY, an S&P 500 fund) as one more Finnhub series, even though it isn't a holding, and show it in the title: "NVDA down 6% (S&P 500 down 1%)".
+- **Intraday alerts (much later).** This is the Robinhood style: an alert at 5%, 10%, 15% and 20% during the day, each level once. It needs polling during market hours, and those prices can't be stored as Readings: `add_readings` is first-value-wins per day, so an 11:00 price would block that day's real close. It's a different product from a twice-a-day digest.
 
 ---
 

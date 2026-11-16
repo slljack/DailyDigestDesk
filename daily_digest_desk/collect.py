@@ -16,6 +16,10 @@ repeat run's reading is deduped on (series, date). Finnhub earnings have no
 cursor either: each run checks a window from a week ago to a week ahead, and
 the store dedupes on event id. Finnhub is skipped if FINNHUB_API_KEY isn't set.
 
+Signal rules run last, on the readings this run added: a big move from the
+previous reading becomes an Event. Only readings from the past week are checked,
+so a first run's backfill doesn't report old moves as news.
+
 A failure in one ticker or series doesn't stop the run. Anything that failed is
 listed as `# ERROR ...` at the end, and the exit code is 1.
 """
@@ -28,15 +32,16 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Iterable
-from datetime import date, timedelta, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
 from dotenv import load_dotenv
 
-from daily_digest_desk.models import Event, Reading
+from daily_digest_desk import signals
 from daily_digest_desk.holdings import load_holdings
-from daily_digest_desk.ingestion import fred, finnhub
+from daily_digest_desk.ingestion import finnhub, fred
 from daily_digest_desk.ingestion.edgar_events import fetch_edgar_events
+from daily_digest_desk.models import Event, Reading
 from daily_digest_desk.store import Store
 
 log = logging.getLogger(__name__)
@@ -54,6 +59,15 @@ class FredFetcher(Protocol):
 
 # How far back to look for the prior month, so a release's change can be computed.
 _PRIOR_MONTH_WINDOW = timedelta(days=100)
+
+# How far back to look for the reading before a new one. Long weekends and bond-market
+# holidays are up to 4 days; the rest is room for a day FRED has no value.
+_PREVIOUS_READING_WINDOW = timedelta(days=10)
+
+# Only readings this recent are checked for signals. A first run backfills weeks of
+# FRED history, and a big move from three weeks ago isn't news. Older readings are
+# still stored and can still be the previous reading for a newer one.
+_SIGNAL_RECENT_WINDOW = timedelta(days=7)
 
 
 def collect_edgar(
@@ -194,6 +208,49 @@ def collect_finnhub_earnings(
     return new_events, errors
 
 
+def collect_signals(
+    store: Store,
+    readings: Iterable[Reading],
+    rules: Iterable[signals.BigMove],
+    today: date,
+) -> tuple[list[Event], dict[str, str]]:
+    """Check each new reading against its rule. Returns (new events, errors by reading).
+
+    Run it after the other collectors have stored their readings, so a reading
+    stored earlier in the same run can be the previous one (a backlog of Thu and
+    Fri compares Fri with Thu). Skipped, not errors: a reading older than a week
+    (first-run backfill), a reading with no rule (a series kept only as history),
+    and one with no earlier reading in the window (a holding's first day).
+    """
+    rules_by_series = {rule.series: rule for rule in rules}
+    new_events: list[Event] = []
+    errors: dict[str, str] = {}
+
+    for latest in readings:
+        if latest.date < today - _SIGNAL_RECENT_WINDOW:
+            continue
+        rule = rules_by_series.get(latest.series)
+        if rule is None:
+            continue
+        try:
+            since = latest.date - _PREVIOUS_READING_WINDOW
+            earlier = [
+                r for r in store.readings_since(latest.series, since) if r.date < latest.date
+            ]
+            if not earlier:
+                continue
+            # readings_since is oldest first, so [-1] is the newest one before `latest`
+            event = signals.big_move_event(rule, earlier[-1], latest)
+        except Exception as exc:  # noqa: BLE001 — isolate per-reading failures
+            log.warning("Signal check failed for %s %s: %s", latest.series, latest.date, exc)
+            errors[f"{latest.series} {latest.date}"] = str(exc)
+            continue
+        if event is not None:
+            new_events.extend(store.add([event]))
+
+    return new_events, errors
+
+
 def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -238,6 +295,14 @@ def main() -> None:
             new += earnings_events
             errors["finnhub_earnings"] = earnings_errors
 
+        # After the collectors, so this run's readings are already in the store.
+        rules = signals.MACRO_RULES + signals.stock_rules(tickers)
+        signal_events, signal_errors = collect_signals(
+            store, fred_readings + quotes_readings, rules, today,
+        )
+        new += signal_events
+        errors["signals"] = signal_errors
+
     for e in sorted(new, key=lambda e: e.occurred_at):
         print(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
     print(f"# {len(new)} new event(s)")
@@ -250,6 +315,7 @@ def main() -> None:
         print(f"# {len(earnings_events)} new Finnhub earnings event(s), included above")
     else:
         print("# Finnhub skipped: set FINNHUB_API_KEY in .env")
+    print(f"# {len(signal_events)} new signal event(s), included above")
     for source, source_errors in errors.items():
         for name, msg in source_errors.items():
             print(f"# ERROR {source} {name}: {msg}")

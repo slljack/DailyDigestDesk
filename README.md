@@ -121,6 +121,7 @@ desk-collect --lookback-days 30         # wider first-run window
 - **Per-ticker cursors.** Each ticker remembers the date it was last fetched through; a failed ticker keeps its old cursor and retries next run without blocking the others.
 - **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
 - **Finnhub** ([finnhub.py](daily_digest_desk/ingestion/finnhub.py)). Each holding's closing price is stored as a reading (`finnhub:<TICKER>`). A run during market hours (weekdays 9:30–16:00 New York) stores no prices, because the price is still moving; run it before the open or after the close. Earnings become two events: a heads-up in the 7 days before a report ("NVDA is reporting earnings on Nov 17 after market close, EPS 2.53 expected") and the result once it's out ("AAPL beat EPS estimate: 2.10 vs 2.03 expected").
+- **Signals** ([signals.py](daily_digest_desk/signals.py)). After collecting, each new reading is compared with the one before it, and a big move becomes an event: "10-year Treasury yield up 0.12 points to 5.10%", "NVDA down 6.21% to $187.40". Thresholds: 0.10 points for the 10-year yield, 0.20 for Fed funds, 3 for VIX, 5% for each holding. Only readings from the past week are checked, so a first run doesn't report old moves.
 - **Failures don't stop the run.** Each failed ticker or series is listed at the end as `# ERROR <source> <name>: <message>`, and `desk-collect` exits 1.
 
 ## Tests
@@ -130,7 +131,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run offline: EDGAR mapping uses fake filing objects, FRED and Finnhub mapping use fake API responses, and the collectors take an injectable fetcher.
+Tests run offline: EDGAR mapping uses fake filing objects, FRED and Finnhub mapping use fake API responses, and the collectors take an injectable fetcher. Signal rules are pure functions; `collect_signals` runs against an in-memory store.
 
 ## Library usage
 
@@ -229,6 +230,7 @@ daily_digest_desk/
   models.py               # Data models: Event, Reading
   store.py                # SQLite store: events, readings, cursors
   holdings.py             # holdings.toml loader
+  signals.py              # Signal rules: readings -> Events (big moves)
   ingestion/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)
     edgar_events.py       # EDGAR filings -> Events (8-K item labels, forms)

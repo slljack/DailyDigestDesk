@@ -79,9 +79,11 @@ Filings and monthly releases (CPI, jobs) are events by nature: they happen once.
 |---|---|---|
 | **Crossed above** a line | ⚠️ 10Y yield crossed above 5% | Yesterday's value (was it already above?) |
 | **Crossed back below** | 10Y yield back below 5% | Yesterday's value |
-| **Big move** | 10Y up 0.4% vs last week | Last week's value |
+| **Big move** | 10Y up 0.12 points vs the previous day | The previous reading |
 
-One event per **change in situation**, not one per day — like a smoke alarm that beeps when smoke first appears, not every minute. Thresholds (which lines, how big a "big move") to be decided per series.
+One event per **change in situation**, not one per day — like a smoke alarm that beeps when smoke first appears, not every minute.
+
+**Decided for v1:** only the big move, compared with the previous reading (1-day window). With a 1-day window each day's move is its own change, so the smoke-alarm repeat problem doesn't come up; it will for crossing rules. Thresholds: 10-year yield 0.10 points, Fed funds 0.20 points, VIX 3 points, each holding 5%. Details in FEATURES.md ("Signals"); crossing rules, multi-day drift and others are listed there under "Planned signals".
 
 ## 6. Web page
 
@@ -135,7 +137,7 @@ Exact format to be decided once v3 produces real labels.
 ## 9. Open questions
 
 1. ~~**Web page:** local or hosted? Generated page or web app?~~ Decided — see section 6: generated page for v1, local app at v3, hosted for friends.
-2. ~~**FRED and Finnhub:** which data, exactly, for v1?~~ Decided — see section 4. Daily values become events via signal rules — see section 5. Still open: the actual thresholds per series.
+2. ~~**FRED and Finnhub:** which data, exactly, for v1?~~ Decided — see section 4. Daily values become events via signal rules — see section 5. Thresholds for v1 are decided there too.
 3. **Red flags:** in v1 or later?
 4. **Thesis history:** when I rewrite a thesis, keep old versions?
 5. **Schedule:** how the two daily runs and the weekly review get triggered (manual first?).
