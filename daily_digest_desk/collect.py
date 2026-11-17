@@ -33,7 +33,9 @@ import os
 import sys
 from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -49,6 +51,7 @@ log = logging.getLogger(__name__)
 Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
 FinnhubFetcher = Callable[[str], dict]
 EarningsFetcher = Callable[[str, date], list[dict]]
+DigestBuilder = Callable[[list[Event], datetime], str]  # (events, now) -> HTML page
 
 
 class FredFetcher(Protocol):
@@ -68,6 +71,12 @@ _PREVIOUS_READING_WINDOW = timedelta(days=10)
 # FRED history, and a big move from three weeks ago isn't news. Older readings are
 # still stored and can still be the previous reading for a newer one.
 _SIGNAL_RECENT_WINDOW = timedelta(days=7)
+
+# The digest's bookmark: when the last page was written.
+_DIGEST_CURSOR = "digest:last"
+_FIRST_DIGEST_WINDOW = timedelta(days=7)  # what the very first page covers
+
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 def collect_edgar(
@@ -249,6 +258,36 @@ def collect_signals(
             new_events.extend(store.add([event]))
 
     return new_events, errors
+
+
+def write_digest(
+    store: Store,
+    now: datetime,
+    out_dir: Path,
+    build: DigestBuilder,
+) -> Path:
+    """Write a page of the events stored since the last digest. Returns the file's path.
+
+    `now` should be taken just before this call. The cursor (`digest:last`) is set
+    to it, so an event stored during the call lands on two pages at worst, never on
+    none. The cursor moves only after the file is written: if building or writing
+    fails, the next digest shows the same events again. With no cursor yet (the
+    first digest), the page covers the past week. `build` is injectable so tests
+    don't depend on the page's HTML.
+    """
+    cursor = store.get_cursor(_DIGEST_CURSOR)
+    since = datetime.fromisoformat(cursor) if cursor else now - _FIRST_DIGEST_WINDOW
+    page = build(store.events_inserted_since(since), now)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # New York time in the name, with seconds, so a rerun in the same minute
+    # doesn't overwrite the page before it: data/digests/2026-11-17-080012.html
+    path = out_dir / f"{now.astimezone(_NEW_YORK):%Y-%m-%d-%H%M%S}.html"
+    path.write_text(page, encoding="utf-8")
+
+    # UTC ISO text, the same format as the store's inserted_at, so `>` compares right.
+    store.set_cursor(_DIGEST_CURSOR, now.astimezone(timezone.utc).isoformat())
+    return path
 
 
 def main() -> None:

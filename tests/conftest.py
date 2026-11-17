@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from daily_digest_desk import store as store_module
 from daily_digest_desk.models import Event
 from daily_digest_desk.store import Store
 
@@ -23,3 +24,15 @@ def make_event(id: str = "edgar:1", ticker: str = "AAPL", day: int = 1, **kw) ->
         url=kw.pop("url", "https://example.test"),
         **kw,
     )
+
+
+def add_at(store, monkeypatch, when, events):
+    """store.add(events), with inserted_at = `when` instead of the real now."""
+
+    class FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    monkeypatch.setattr(store_module, "datetime", FrozenClock)
+    return store.add(events)

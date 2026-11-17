@@ -4,6 +4,7 @@ Public surface:
     Store(path)
     store.add(events)                     -> list[Event]    (only the new ones)
     store.events_since(since, tickers)    -> list[Event]
+    store.events_inserted_since(since)    -> list[Event]    (stored after `since`)
     store.add_readings(readings)          -> list[Reading]  (only the new ones)
     store.readings_since(series, since)   -> list[Reading]
     store.get_cursor(key) / set_cursor(key, value)
@@ -55,6 +56,19 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+# The columns an Event is built from, in the order _row_to_event reads them.
+# inserted_at isn't one: it's the store's bookkeeping, not part of what happened.
+_EVENT_COLUMNS = "id, source, kind, ticker, occurred_at, title, url, fields"
+
+
+def _row_to_event(r: tuple) -> Event:
+    return Event(
+        id=r[0], source=r[1], kind=r[2], ticker=r[3],
+        occurred_at=datetime.fromisoformat(r[4]),
+        title=r[5], url=r[6], fields=json.loads(r[7]),
+    )
+
+
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         if str(path) != ":memory:":
@@ -98,8 +112,7 @@ class Store:
     ) -> list[Event]:
         """Events with occurred_at >= since, oldest first. Optionally filter by ticker."""
         sql = (
-            "SELECT id, source, kind, ticker, occurred_at, title, url, fields "
-            "FROM events WHERE occurred_at >= ?"
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE occurred_at >= ?"
         )
         params: list[str] = [_iso(since)]
         if tickers is not None:
@@ -107,14 +120,21 @@ class Store:
             sql += f" AND ticker IN ({','.join('?' * len(tickers))})"
             params.extend(tickers)
         sql += " ORDER BY occurred_at, id"
-        return [
-            Event(
-                id=r[0], source=r[1], kind=r[2], ticker=r[3],
-                occurred_at=datetime.fromisoformat(r[4]),
-                title=r[5], url=r[6], fields=json.loads(r[7]),
-            )
-            for r in self._conn.execute(sql, params)
-        ]
+        return [_row_to_event(r) for r in self._conn.execute(sql, params)]
+
+    def events_inserted_since(self, since: datetime) -> list[Event]:
+        """Events stored after `since`, oldest stored first. For "new since the last digest".
+
+        Filters on inserted_at (when we stored it), not occurred_at (when it happened):
+        an earnings result filled in two days late is still news to us. Strictly after,
+        so an event stored at exactly `since` was already on the last digest.
+        """
+        sql = (
+            f"SELECT {_EVENT_COLUMNS} FROM events "
+            "WHERE inserted_at > ? "
+            "ORDER BY inserted_at, id"  # id breaks ties: one add() batch shares an inserted_at
+        )
+        return [_row_to_event(r) for r in self._conn.execute(sql, [_iso(since)])]
 
     def add_readings(self, readings: Iterable[Reading]) -> list[Reading]:
         """Insert readings, skipping (series, date) pairs already stored. Returns only the new ones.
