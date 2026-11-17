@@ -16,6 +16,12 @@ what = "A filing a company must make within four business days of something impo
 why = "It's how official news reaches investors between the quarterly reports, so the stock often reacts the same day."
 look_for = "Which item it is. Earnings results (Item 2.02), leadership changes (5.02) and non-reliance on prior financials (4.02, rare and serious) matter most. \"Other events\" (8.01) can be anything."
 
+[6-K]
+name = "6-K: a foreign company's current report"
+what = "Companies based outside the US (Nebius, for example) file a 6-K where a US company would file an 8-K: for earnings, big deals, management changes, or anything they announce at home. A 6-K/A corrects or adds to an earlier one."
+why = "It's how official news from a foreign company reaches US investors, so the stock can react the same day."
+look_for = "Unlike an 8-K, a 6-K doesn't list item numbers, so the digest can't tell what it's about from the title. Open it: the attached press release (an exhibit) usually says."
+
 [form-4]
 name = "Form 4: an insider transaction"
 what = "Filed within two business days when an insider (an officer, a director, or an owner of more than 10%) buys, sells, or is granted the company's stock or options."
@@ -49,8 +55,14 @@ look_for = "New or changed risk factors (Item 1A), and management's discussion (
 [S-3]
 name = "S-3: permission to sell new shares"
 what = "A registration that lets a company sell new stock or bonds quickly. Often it's a \"shelf\": permission it can use any time over the next three years."
-why = "New shares dilute existing owners: the same company split into more pieces. The stock often falls when a company actually sells shares."
+why = "New shares dilute existing owners: the same company split into more pieces. The stock often falls when a company actually sells shares. An S-3ASR is the automatic version for large companies: it takes effect right away, without waiting for the SEC."
 look_for = "Whether it's only a shelf (no sale yet) or an actual offering, and how big it is compared with the company. Some S-3s only let existing holders resell shares they already own: that adds no new shares, so no dilution."
+
+[424B]
+name = "424B: a prospectus"
+what = "The document a company files when it's offering securities to buy, usually new shares or bonds sold off a shelf (an earlier S-3). The number after 424B is the rule it was filed under: 424B5 is the common one for selling shares."
+why = "A prospectus often means a sale is actually happening, not just allowed. New shares dilute existing owners, and the price is often set a bit below the market's."
+look_for = "How many shares and at what price, compared with the company's size. Some prospectuses only update an earlier one, or cover existing holders reselling their shares, which adds no new shares."
 
 # --- Earnings (Finnhub) -----------------------------------------------------------
 

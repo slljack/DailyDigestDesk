@@ -43,6 +43,14 @@ definition = "Regular US trading is 9:30am to 4:00pm New York time. Results afte
 words = ["8-K"]
 definition = "A filing about an important company event, due within four business days."
 
+[6-k]
+words = ["6-K"]
+definition = "A foreign company's current report: its version of an 8-K."
+
+[prospectus]
+words = ["prospectus", "prospectuses"]
+definition = "The document describing securities being offered for sale: how many, at what price, and the risks."
+
 [10-q]
 words = ["10-Q"]
 definition = "The quarterly report, for the first three quarters of the year."

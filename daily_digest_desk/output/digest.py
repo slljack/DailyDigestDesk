@@ -25,6 +25,9 @@ _NEW_YORK = ZoneInfo("America/New_York")
 # SEC renamed the forms in 2024 ("SC 13D" -> "SCHEDULE 13D"); both show up.
 _13D_FORMS = ("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")
 _13G_FORMS = ("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")
+# Same list as edgar_events.PROSPECTUS_FORMS (a test checks); not imported, so the
+# page doesn't load edgartools.
+_PROSPECTUS_FORMS = ("424B1", "424B2", "424B3", "424B4", "424B5", "424B7", "424B8")
 
 Explainers = Mapping[str, Mapping[str, str]]  # key -> {"name", "what", "why", "look_for"}
 
@@ -96,12 +99,14 @@ _NO_GLOSSARY = Glossary({})
 # things (a VIX jump isn't an NVDA drop), so explainer_key picks those by series.
 _EXPLAINER_BY_KIND = {
     "8-K": "8-K", "8-K/A": "8-K",
+    "6-K": "6-K", "6-K/A": "6-K",
     "4": "form-4",
     **{form: "13d" for form in _13D_FORMS},
     **{form: "13g" for form in _13G_FORMS},
     "10-Q": "10-Q",
     "10-K": "10-K",
-    "S-3": "S-3",
+    "S-3": "S-3", "S-3ASR": "S-3",
+    **{form: "424B" for form in _PROSPECTUS_FORMS},
     "earnings_headsup": "earnings-headsup",
     "earnings_result": "earnings-result",
     "CPIAUCSL": "cpi",
@@ -178,11 +183,12 @@ _RED_FLAG_TIP = html.escape(
 # listed here folds under its own name.
 _GROUP_LABELS = {
     "8-K": "8-K filings", "8-K/A": "8-K filings",
+    "6-K": "6-K filings", "6-K/A": "6-K filings",
     "4": "Insider transactions",
     **{form: "Big-holder stake filings" for form in _13D_FORMS + _13G_FORMS},
     "10-Q": "Quarterly reports",
     "10-K": "Annual reports",
-    "S-3": "Share offering filings",
+    **{form: "Share offering filings" for form in ("S-3", "S-3ASR", *_PROSPECTUS_FORMS)},
     "earnings_headsup": "Earnings heads-ups",
     "earnings_result": "Earnings results",
     "big_move": "Big moves",

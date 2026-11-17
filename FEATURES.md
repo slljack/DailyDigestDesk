@@ -54,6 +54,7 @@ Foundation for the daily digest. Design decisions:
 - **UTC-only timestamps.** `occurred_at` must be tz-aware and is normalized to UTC; stored as ISO strings so SQL string order equals time order.
 - **Per-ticker cursors** (`edgar:<TICKER>`). New tickers get their own lookback; a failing ticker keeps its cursor and is retried next run.
 - **Fetch vs. map split.** `filing_to_event` is pure and unit-tested with fakes; `collect_edgar` takes an injectable fetcher.
+- **Watched forms** (`WATCH_FORMS`): 8-K, 6-K (foreign companies' 8-K, which has no item numbers), Form 4, 13D/13G, 10-Q, 10-K, S-3, S-3ASR and 424B prospectuses. Tests check that every watched form has a title description, a group label on the page and an explainer, so a form added later can't show up half-handled.
 - **Errors grouped by source.** `main()` keeps one errors dict per source (`errors["edgar"]`, `errors["finnhub_earnings"]`, …), so NVDA failing in two sources keeps both messages instead of the second overwriting the first. Each prints as `# ERROR <source> <ticker or series>: <message>`, and the run exits 1 if anything failed, so a scheduler can tell.
 - **One `today` per run.** `main()` reads the date once and passes it to every collector, so a run that crosses midnight doesn't mix two dates.
 

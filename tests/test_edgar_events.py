@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from daily_digest_desk.ingestion.edgar_events import filing_to_event, parse_items
+from daily_digest_desk.ingestion.edgar_events import (
+    FORM_DESCRIPTIONS, PROSPECTUS_FORMS, WATCH_FORMS, filing_to_event, parse_items,
+)
 
 
 @dataclass
@@ -63,3 +65,26 @@ def test_occurred_at_falls_back_to_filing_date():
 def test_url_falls_back_to_filing_url():
     f = FakeFiling(form="4", filing_date=date(2026, 10, 29), homepage_url="")
     assert filing_to_event("AAPL", f).url == "https://www.sec.gov/doc.htm"
+
+
+def test_foreign_current_report_title():
+    f = FakeFiling(form="6-K", filing_date=date(2026, 11, 17))
+    assert filing_to_event("NBIS", f).title == "NBIS 6-K: Current report (foreign company)"
+    amended = FakeFiling(form="6-K/A", filing_date=date(2026, 11, 17))
+    assert filing_to_event("NBIS", amended).title == "NBIS 6-K/A (amended): Current report (foreign company)"
+
+
+def test_automatic_shelf_and_prospectus_titles():
+    shelf = FakeFiling(form="S-3ASR", filing_date=date(2026, 11, 17))
+    assert filing_to_event("KEEL", shelf).title == "KEEL S-3ASR: Shelf registration (possible dilution)"
+    prospectus = FakeFiling(form="424B5", filing_date=date(2026, 11, 17))
+    assert filing_to_event("AAOI", prospectus).title == "AAOI 424B5: Prospectus: securities being offered"
+
+
+def test_every_watched_form_has_a_description():
+    # An 8-K is titled by its items; every other watched form needs a description,
+    # or its title would just repeat the form name.
+    for form in WATCH_FORMS:
+        base = form.removesuffix("/A")
+        assert base == "8-K" or base in FORM_DESCRIPTIONS, form
+    assert {"6-K", "S-3ASR", "424B5"} <= set(WATCH_FORMS) and set(PROSPECTUS_FORMS) <= set(WATCH_FORMS)

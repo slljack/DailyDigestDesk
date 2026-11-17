@@ -191,6 +191,9 @@ def test_explainer_key_by_kind():
     assert explainer_key(event("1", kind="SCHEDULE 13D/A")) == "13d"
     assert explainer_key(event("1", kind="SC 13G")) == "13g"
     assert explainer_key(event("1", kind="CPIAUCSL", ticker=None)) == "cpi"
+    assert explainer_key(event("1", kind="6-K/A")) == "6-K"
+    assert explainer_key(event("1", kind="S-3ASR")) == "S-3"
+    assert explainer_key(event("1", kind="424B5")) == "424B"
     assert explainer_key(event("1", kind="something new")) is None
 
 
@@ -438,3 +441,22 @@ def test_market_move_shows_under_macro_and_market():
     assert headings == ["<h2>Macro &amp; Market</h2>", "<h2>AAPL</h2>"]
     macro = page[page.index("Macro &amp; Market"):page.index("<h2>AAPL</h2>")]
     assert "S&amp;P 500 (SPY) down 2.32%" in visible_lines(macro)[1]
+
+
+# --- every watched form is handled on the page ------------------------------------
+
+def test_every_watched_form_has_a_group_label_and_an_explainer():
+    from daily_digest_desk.ingestion.edgar_events import PROSPECTUS_FORMS, WATCH_FORMS
+    from daily_digest_desk.output.digest import _GROUP_LABELS, _PROSPECTUS_FORMS
+
+    assert _PROSPECTUS_FORMS == PROSPECTUS_FORMS  # the page's copy is the same list
+    explainers = load_explainers()
+    for form in WATCH_FORMS:
+        assert form in _GROUP_LABELS, form
+        assert explainer_key(event("1", kind=form)) in explainers, form
+
+
+def test_share_offering_filings_fold_together_only_when_noisy():
+    # S-3, S-3ASR and 424B share a label but aren't noisy: each keeps its own line.
+    page = _section("KEEL", [event("1", kind="S-3ASR"), event("2", kind="424B5", hours_ago=2)])
+    assert "<details>" not in page

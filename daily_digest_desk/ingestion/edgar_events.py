@@ -15,15 +15,23 @@ from daily_digest_desk.ingestion.edgar import _company
 
 log = logging.getLogger(__name__)
 
+# 424B prospectuses: the numbered rule each was filed under. 424B5 is the common
+# one for selling shares off a shelf; 424B3 often updates an earlier prospectus.
+PROSPECTUS_FORMS: tuple[str, ...] = (
+    "424B1", "424B2", "424B3", "424B4", "424B5", "424B7", "424B8",
+)
+
 # Forms worth surfacing in a daily digest. 13D/G were renamed "SCHEDULE 13D/G"
 # when SEC moved them to structured XML; both spellings appear in the index.
 WATCH_FORMS: tuple[str, ...] = (
     "8-K", "8-K/A",
+    "6-K", "6-K/A",  # a foreign company's 8-K (e.g. NBIS)
     "4",
     "SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A",
     "SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A",
     "10-Q", "10-K",
-    "S-3",
+    "S-3", "S-3ASR",  # S-3ASR: the automatic shelf for large companies
+    *PROSPECTUS_FORMS,
 )
 
 FORM_DESCRIPTIONS: dict[str, str] = {
@@ -35,6 +43,10 @@ FORM_DESCRIPTIONS: dict[str, str] = {
     "10-Q": "Quarterly report",
     "10-K": "Annual report",
     "S-3": "Shelf registration (possible dilution)",
+    "S-3ASR": "Shelf registration (possible dilution)",
+    # Unlike an 8-K, a 6-K has no item numbers, so the title can't say what it's about.
+    "6-K": "Current report (foreign company)",
+    **{form: "Prospectus: securities being offered" for form in PROSPECTUS_FORMS},
 }
 
 # 8-K item numbers -> short labels. The item number is the cheapest

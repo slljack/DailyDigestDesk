@@ -116,7 +116,7 @@ desk-collect                            # -> data/events.db and data/digests/<da
 desk-collect --lookback-days 30         # wider first-run window
 ```
 
-- Watches 8-K (titled by item, e.g. "Earnings results", "Non-reliance on prior financials"), Form 4, 13D/G, 10-Q/10-K, S-3. See `WATCH_FORMS` in [edgar_events.py](daily_digest_desk/ingestion/edgar_events.py).
+- Watches 8-K (titled by item, e.g. "Earnings results", "Non-reliance on prior financials"), 6-K (a foreign company's 8-K, e.g. NBIS; no item numbers, so the title can't say what it's about), Form 4, 13D/G, 10-Q/10-K, and share offerings: S-3, S-3ASR (the automatic shelf for large companies) and 424B prospectuses (securities actually being offered). See `WATCH_FORMS` in [edgar_events.py](daily_digest_desk/ingestion/edgar_events.py).
 - **Idempotent.** Every source emits `Event`s ([models.py](daily_digest_desk/models.py)) with a deterministic id (`edgar:<accession>`); the store ([store.py](daily_digest_desk/store.py)) ignores ids it has seen, so re-running prints only what's new.
 - **Per-ticker cursors.** Each ticker remembers the date it was last fetched through; a failed ticker keeps its old cursor and retries next run without blocking the others.
 - **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
