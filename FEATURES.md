@@ -123,6 +123,21 @@ v1 has one rule, the **big move**: a reading compared with the one before it in 
 
 Not yet: Form 4 parsing (transaction code P vs S, size), scoring, more signal rules (see "Planned signals" below).
 
+### Digest page ([output/digest.py](daily_digest_desk/output/digest.py), `write_digest` in [collect.py](daily_digest_desk/collect.py), `events_inserted_since` in [store.py](daily_digest_desk/store.py))
+
+Each `desk-collect` run ends by writing one HTML page: `data/digests/<New York date-time>.html`, e.g. `2026-11-17-080012.html`. Open it in a browser; no server needed.
+
+- **New since the last page, by when we stored it.** The page shows events with `inserted_at` after the `digest:last` cursor, not `occurred_at`: an earnings result Finnhub fills in two days late keeps its real date but is still news to us. Strictly after (`>`), so an event stored exactly at the cursor was on the last page. The first page, with no cursor, covers the past week.
+- **The cursor moves only after the file is written.** It's set to the time taken just before the query, so an event stored in between lands on two pages at worst, never on none. A failed page is `# ERROR digest page: ...`, and the next run's page shows the same events.
+- **One file per run.** A missed 8am page isn't overwritten by the 5pm one. The name has seconds, so a rerun in the same minute doesn't overwrite either.
+- **Layout.** "Macro & Market" (events with no ticker) first, then each holding in `holdings.toml` order. A holding with nothing new is left out. A ticker no longer in holdings still shows, after the holdings, A to Z. Newest first within a section, each line a title link plus its New York day.
+- **Only noisy kinds fold.** Two or more insider transactions (Form 4) or big-holder stake filings (all 13D/13G variants) fold into one click-to-open line with a count, using HTML's `<details>`. Everything else, 8-Ks included, gets its own line, so an earnings 8-K is never hidden.
+- **Safe with outside text.** Titles, urls and headings go through `html.escape`, so a `<script>` in a title is shown, not run. Only `http(s)` urls become links, because escaping can't make a `javascript:` url safe to click.
+- **Pure builder, separate writer.** `build_digest(events, now, tickers)` is text in, text out, with no store, files or clock, so its tests are plain strings. `write_digest` does the cursor and the file and takes the builder as a parameter.
+- **HTML and CSS only.** Python writes the page; no JavaScript, no dependencies. Light and dark mode follow the system.
+
+Not yet: explainers per data type, glossary on hover, scheduling, upcoming earnings list, company names next to tickers.
+
 ### Configuration
 
 - `EDGAR_USER_AGENT` env var → passed to `edgar.set_identity()` on first use.
@@ -188,10 +203,6 @@ Pre-migration this was an open caveat (would have required hand-rolling a sectio
 
 [reasoning/grounding.py](daily_digest_desk/reasoning/grounding.py) is still a stub. Plan: pipe `fetch_section(filing, item)` output to Claude for structured claim extraction with citations back to (filing accession, section, span). Use Anthropic's prompt caching: section text as the cacheable system prompt, the extraction query as the variable part.
 
-### Obsidian output
-
-[output/obsidian.py](daily_digest_desk/output/obsidian.py) is still a stub. Planned: write filing summaries / extracted claims as Markdown notes with backlinks for cross-filing navigation.
-
 ### Column-schema fragility
 
 We rely on edgartools' DataFrame schema (column names like `numeric_value`, `period_end`, `filing_date`). Centralized via the `COL_*` constants in `edgar.py`, but the assumption is unverified until first run. Verify after first `pip install -e .` and a test query.
@@ -224,5 +235,5 @@ daily_digest_desk/
   reasoning/
     grounding.py          # (stub) ground claims in source filings
   output/
-    obsidian.py           # (stub) write Obsidian notes
+    digest.py             # Events -> the digest HTML page
 ```

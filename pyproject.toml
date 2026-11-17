@@ -1,7 +1,7 @@
 [project]
 name = "daily-digest-desk"
 version = "0.1.0"
-description = "Daily investing digest: SEC filings and market data -> grounded summaries -> Obsidian notes."
+description = "Daily investing digest: SEC filings and market data -> signals -> a digest web page."
 requires-python = ">=3.11"
 dependencies = [
     "edgartools>=4.0",

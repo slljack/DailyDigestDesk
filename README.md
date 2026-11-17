@@ -1,6 +1,6 @@
 # DailyDigestDesk
 
-Daily investing digest for your portfolio: pull SEC filings, FRED macro data and Finnhub prices → rank what matters → grounded summaries → Obsidian notes.
+Daily investing digest for your portfolio: pull SEC filings, FRED macro data and Finnhub prices → signals → a digest page you open in the browser.
 
 Built on top of [edgartools](https://github.com/dgunning/edgartools) for SEC ingestion, with a curated semantic-metric layer and CLI on top.
 
@@ -112,7 +112,7 @@ First layer of the daily digest: pull new EDGAR filings, closing prices and earn
 
 ```bash
 cp holdings.example.toml holdings.toml     # edit tickers/weights (gitignored)
-desk-collect                            # -> data/events.db, prints new events
+desk-collect                            # -> data/events.db and data/digests/<date-time>.html
 desk-collect --lookback-days 30         # wider first-run window
 ```
 
@@ -122,6 +122,7 @@ desk-collect --lookback-days 30         # wider first-run window
 - **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
 - **Finnhub** ([finnhub.py](daily_digest_desk/ingestion/finnhub.py)). Each holding's closing price is stored as a reading (`finnhub:<TICKER>`). A run during market hours (weekdays 9:30–16:00 New York) stores no prices, because the price is still moving; run it before the open or after the close. Earnings become two events: a heads-up in the 7 days before a report ("NVDA is reporting earnings on Nov 17 after market close, EPS 2.53 expected") and the result once it's out ("AAPL beat EPS estimate: 2.10 vs 2.03 expected").
 - **Signals** ([signals.py](daily_digest_desk/signals.py)). After collecting, each new reading is compared with the one before it, and a big move becomes an event: "10-year Treasury yield up 0.12 points to 5.10%", "NVDA down 6.21% to $187.40". Thresholds: 0.10 points for the 10-year yield, 0.20 for Fed funds, 3 for VIX, 5% for each holding. Only readings from the past week are checked, so a first run doesn't report old moves.
+- **Digest page** ([digest.py](daily_digest_desk/output/digest.py)). Each run ends by writing `data/digests/<New York date-time>.html` with everything stored since the last page (the first page covers the past week). Macro & Market first, then each holding with something new; insider transactions and big-holder filings fold into one click-to-open line. The run prints the page's path; open it in a browser. `--digest-dir` writes it somewhere else.
 - **Failures don't stop the run.** Each failed ticker or series is listed at the end as `# ERROR <source> <name>: <message>`, and `desk-collect` exits 1.
 
 ## Tests
@@ -131,7 +132,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests run offline: EDGAR mapping uses fake filing objects, FRED and Finnhub mapping use fake API responses, and the collectors take an injectable fetcher. Signal rules are pure functions; `collect_signals` runs against an in-memory store.
+Tests run offline: EDGAR mapping uses fake filing objects, FRED and Finnhub mapping use fake API responses, and the collectors take an injectable fetcher. Signal rules and the digest page builder are pure functions; `collect_signals` and `write_digest` run against an in-memory store (and pytest's temporary folder for the page file).
 
 ## Library usage
 
@@ -240,6 +241,6 @@ daily_digest_desk/
   reasoning/
     grounding.py          # (stub) ground claims in source filings
   output/
-    obsidian.py           # (stub) write Obsidian notes
+    digest.py             # Events -> the digest HTML page
 tests/                    # offline pytest suite
 ```

@@ -20,6 +20,10 @@ Signal rules run last, on the readings this run added: a big move from the
 previous reading becomes an Event. Only readings from the past week are checked,
 so a first run's backfill doesn't report old moves as news.
 
+Each run ends by writing a digest page, data/digests/<New York date-time>.html,
+with every event stored since the last page (the `digest:last` cursor; the first
+page covers the past week). Open it in a browser.
+
 A failure in one ticker or series doesn't stop the run. Anything that failed is
 listed as `# ERROR ...` at the end, and the exit code is 1.
 """
@@ -44,6 +48,7 @@ from daily_digest_desk.holdings import load_holdings
 from daily_digest_desk.ingestion import finnhub, fred
 from daily_digest_desk.ingestion.edgar_events import fetch_edgar_events
 from daily_digest_desk.models import Event, Reading
+from daily_digest_desk.output.digest import build_digest
 from daily_digest_desk.store import Store
 
 log = logging.getLogger(__name__)
@@ -303,6 +308,10 @@ def main() -> None:
         "--lookback-days", type=int, default=7,
         help="Window for tickers with no cursor yet (default: 7).",
     )
+    parser.add_argument(
+        "--digest-dir", default="data/digests",
+        help="Where each run's digest page is written (default: data/digests).",
+    )
     args = parser.parse_args()
 
     tickers = [h.ticker for h in load_holdings(args.holdings)]
@@ -311,6 +320,7 @@ def main() -> None:
     fred_readings: list[Reading] = []
     quotes_readings: list[Reading] = []
     earnings_events: list[Event] = []
+    digest_path: Path | None = None
     errors: dict[str, dict[str, str]] = {}  # source -> {ticker or series: message}
     today = date.today()  # one date for every collector, even if the run crosses midnight
     with Store(args.db) as store:
@@ -342,6 +352,18 @@ def main() -> None:
         new += signal_events
         errors["signals"] = signal_errors
 
+        # Last, so the page has everything this run stored. A failed page leaves the
+        # digest cursor alone, so the next run's page shows the same events again.
+        build = functools.partial(build_digest, tickers=tickers)
+        try:
+            digest_path = write_digest(
+                store, datetime.now(timezone.utc), Path(args.digest_dir), build,
+            )
+            errors["digest"] = {}
+        except Exception as exc:  # noqa: BLE001 — the collected data is already stored
+            log.warning("Digest page failed: %s", exc)
+            errors["digest"] = {"page": str(exc)}
+
     for e in sorted(new, key=lambda e: e.occurred_at):
         print(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
     print(f"# {len(new)} new event(s)")
@@ -355,6 +377,8 @@ def main() -> None:
     else:
         print("# Finnhub skipped: set FINNHUB_API_KEY in .env")
     print(f"# {len(signal_events)} new signal event(s), included above")
+    if digest_path:
+        print(f"# Digest page: {digest_path.resolve()}")
     for source, source_errors in errors.items():
         for name, msg in source_errors.items():
             print(f"# ERROR {source} {name}: {msg}")
