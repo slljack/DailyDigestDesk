@@ -111,6 +111,7 @@ _EXPLAINER_BY_SERIES = {
     "fred:DGS10": "10-year-yield",
     "fred:DFF": "fed-funds",
     "fred:VIXCLS": "vix",
+    "finnhub:SPY": "sp500-move",  # the benchmark: before the finnhub: catch-all below
 }
 
 
@@ -118,9 +119,11 @@ def explainer_key(event: Event) -> str | None:
     """The explainer for this event, or None if it has none."""
     if event.kind == "big_move":
         series = event.fields.get("series", "")
+        if series in _EXPLAINER_BY_SERIES:
+            return _EXPLAINER_BY_SERIES[series]
         if series.startswith("finnhub:"):
-            return "stock-big-move"
-        return _EXPLAINER_BY_SERIES.get(series)
+            return "stock-big-move"  # any other Finnhub price is a holding
+        return None
     return _EXPLAINER_BY_KIND.get(event.kind)
 
 

@@ -105,6 +105,7 @@ v1 has one rule, the **big move**: a reading compared with the one before it in 
 | `fred:DGS10` 10-year yield | 0.10 points | a normal day is ~0.04 |
 | `fred:DFF` Fed funds rate | 0.20 points | it only moves when the Fed does |
 | `fred:VIXCLS` VIX | 3 points | a normal day is ~0.6 |
+| `finnhub:SPY` S&P 500 (SPY) | 2% | a normal day is under 1%; no ticker, so it shows under Macro & Market |
 | `finnhub:<TICKER>` each holding | 5% | same for every holding in v1 |
 
 - **Rules are data.** A `BigMove` holds the series, the title name, the threshold, and whether the move is in points (`diff`) or percent (`pct`). Macro rules are a fixed list, `MACRO_RULES`; stock rules are built from the holdings by `stock_rules(tickers)`. Thresholds are roughly 3–5× a normal day's move on Oct–Nov 2026 data, to be tuned after a few weeks of digests.
@@ -223,7 +224,7 @@ The big move (one series, today vs the previous reading) is the first rule. Thes
   - **VIX above 30.** VIX's long-run average is about 20, so crossing 20 happens too often to be news. Above 30 is market stress.
 - **Multi-day drift.** For example, down 10% or more over a week with no single 5% day. The window is per rule, which the big move put off for v1.
 - **Big move right after earnings.** Link a stock's big move to that ticker's earnings result from the day before or the same day: "NVDA down 8% the day after earnings". This gives context, not just a number.
-- **Compared with the market.** NVDA −5% means less on a day the whole market fell 4%. Store a benchmark (SPY, an S&P 500 fund) as one more Finnhub series, even though it isn't a holding, and show it in the title: "NVDA down 6% (S&P 500 down 1%)".
+- **Compared with the market.** NVDA −5% means less on a day the whole market fell 4%. Store a benchmark (SPY, an S&P 500 fund) as one more Finnhub series, even though it isn't a holding, and show it in the title: "NVDA down 6% (S&P 500 down 1%)". SPY is now stored (for the S&P 500 big move), so this needs only the comparison and the title.
 - **Intraday alerts (much later).** This is the Robinhood style: an alert at 5%, 10%, 15% and 20% during the day, each level once. It needs polling during market hours, and those prices can't be stored as Readings: `add_readings` is first-value-wins per day, so an 11:00 price would block that day's real close. It's a different product from a twice-a-day digest.
 
 ---

@@ -199,6 +199,7 @@ def test_explainer_key_big_moves_by_series():
     assert explainer_key(big_move("fred:VIXCLS")) == "vix"
     assert explainer_key(big_move("fred:DGS10")) == "10-year-yield"
     assert explainer_key(big_move("fred:DGS2")) is None  # a series with no explainer yet
+    assert explainer_key(big_move("finnhub:SPY")) == "sp500-move"  # not "a holding"
 
 
 def test_item_button_opens_its_explainer_card():
@@ -428,3 +429,12 @@ def test_header_counts_red_flags():
 def test_header_says_nothing_about_red_flags_when_there_are_none():
     page = build_digest([event("1")], NOW, ["AAPL"], {})
     assert '<p class="meta">Tue Nov 17, 8:00am · 1 new item</p>' in page
+
+
+def test_market_move_shows_under_macro_and_market():
+    spy = big_move("finnhub:SPY").model_copy(update={"title": "S&P 500 (SPY) down 2.32% to $585.12"})
+    page = build_digest([spy, event("a", ticker="AAPL")], NOW, ["AAPL"], {})
+    headings = [line for line in page.splitlines() if line.startswith("<h2>")]
+    assert headings == ["<h2>Macro &amp; Market</h2>", "<h2>AAPL</h2>"]
+    macro = page[page.index("Macro &amp; Market"):page.index("<h2>AAPL</h2>")]
+    assert "S&amp;P 500 (SPY) down 2.32%" in visible_lines(macro)[1]

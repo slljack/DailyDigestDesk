@@ -3,7 +3,9 @@ from zoneinfo import ZoneInfo
 
 from daily_digest_desk.collect import collect_signals
 from daily_digest_desk.models import Reading
-from daily_digest_desk.signals import BigMove, big_move_event, stock_rules
+from daily_digest_desk.signals import (
+    BENCHMARK, MACRO_RULES, BigMove, big_move_event, stock_rules,
+)
 
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -13,6 +15,7 @@ TEN_YEAR = BigMove("fred:DGS10", "10-year Treasury yield", 0.10, change="diff", 
 NVDA = BigMove("finnhub:NVDA", "NVDA", 5.0, change="pct", ticker="NVDA")
 VIX = BigMove("fred:VIXCLS", "VIX", 3.0, change="diff")
 DFF = BigMove("fred:DFF", "Fed funds rate", 0.20, change="diff", unit="%")
+SPY = BigMove("finnhub:SPY", "S&P 500 (SPY)", 2.0, change="pct")  # no ticker: Macro & Market
 
 
 def ten_year(day: date, value: float) -> Reading:
@@ -158,6 +161,33 @@ def test_long_weekend_gap_is_still_a_normal_day():
     event = big_move_event(TEN_YEAR, previous, latest)
     assert event is not None
     assert event.title == "10-year Treasury yield up 0.25 points to 5.15%"
+
+
+def test_market_big_move_has_a_yahoo_link_and_no_ticker():
+    previous = Reading(series="finnhub:SPY", date=date(2026, 11, 5), value=599.00)
+    latest = Reading(series="finnhub:SPY", date=date(2026, 11, 6), value=585.12)
+    event = big_move_event(SPY, previous, latest)
+    assert event is not None
+    assert event.title == "S&P 500 (SPY) down 2.32% to $585.12"
+    assert event.url == "https://finance.yahoo.com/quote/SPY"
+    assert event.ticker is None  # so the page puts it under Macro & Market
+    assert event.fields == {
+        "series": "finnhub:SPY", "previous": 599.00, "latest": 585.12,
+        "move": -2.32, "move_kind": "pct",
+    }
+
+
+def test_market_small_move_is_not_an_event():
+    previous = Reading(series="finnhub:SPY", date=date(2026, 11, 5), value=599.00)
+    latest = Reading(series="finnhub:SPY", date=date(2026, 11, 6), value=590.00)  # -1.50%
+    assert big_move_event(SPY, previous, latest) is None
+
+
+def test_the_benchmark_rule_is_a_macro_rule():
+    # The real table: one 2% rule for the benchmark, with no ticker.
+    (rule,) = [r for r in MACRO_RULES if r.series == f"finnhub:{BENCHMARK}"]
+    assert BENCHMARK == "SPY"
+    assert (rule.threshold, rule.change, rule.ticker) == (2.0, "pct", None)
 
 
 def test_stock_rules_one_pct_rule_per_ticker():

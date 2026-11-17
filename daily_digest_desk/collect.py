@@ -12,7 +12,8 @@ FRED series also have one cursor each (`fred:<SERIES>`). FRED is skipped
 if FRED_API_KEY isn't set.
 
 Finnhub quotes have no cursor: `/quote` only returns the latest price, and a
-repeat run's reading is deduped on (series, date). Finnhub earnings have no
+repeat run's reading is deduped on (series, date). Quotes are fetched for every
+holding plus SPY, the S&P 500 benchmark. Finnhub earnings have no
 cursor either: each run checks a window from a week ago to a week ahead, and
 the store dedupes on event id. Finnhub is skipped if FINNHUB_API_KEY isn't set.
 
@@ -336,7 +337,10 @@ def main() -> None:
         if finnhub_key:
             now = datetime.now(timezone.utc)
             fetch_quote = functools.partial(finnhub.fetch_quote, api_key=finnhub_key)
-            quotes_readings, quotes_errors = collect_finnhub(store, tickers, now, fetch_quote)
+            # The benchmark's close too, for the S&P 500 rule; dict.fromkeys drops it
+            # if it's also a holding.
+            quote_symbols = list(dict.fromkeys([*tickers, signals.BENCHMARK]))
+            quotes_readings, quotes_errors = collect_finnhub(store, quote_symbols, now, fetch_quote)
             errors["finnhub_quotes"] = quotes_errors
 
             fetch_earnings = functools.partial(finnhub.fetch_earnings, api_key=finnhub_key)

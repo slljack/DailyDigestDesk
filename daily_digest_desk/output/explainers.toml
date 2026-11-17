@@ -98,6 +98,12 @@ what = "A measure of how much the S&P 500 is expected to swing over the next 30 
 why = "It jumps when investors get nervous, usually while stocks fall. Above 30 means real stress."
 look_for = "Whether your holdings moved with the market or on their own news."
 
+[sp500-move]
+name = "Big move in the S&P 500"
+what = "The S&P 500, about 500 of the largest US companies and the usual measure of \"the market\", closed at least 2% above or below its previous close. The digest follows it through SPY, a fund that tracks the index, so the level shown is SPY's price, not the index's."
+why = "A normal day is under 1%, so 2% is a big day for the whole market. On days like this, most stocks move together, for reasons like interest rates, inflation news or fear."
+look_for = "Whether your holdings moved more or less than the market did. A holding that fell 3% on a day the market fell 2% mostly moved with the market."
+
 # --- Signals ----------------------------------------------------------------------
 
 [stock-big-move]

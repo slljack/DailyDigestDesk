@@ -34,8 +34,8 @@ class BigMove:
     name: str            # for the title: "10-year Treasury yield"
     threshold: float     # how big counts as big, in the unit `change` gives
     change: str          # "diff" (points) or "pct" (percent), like fred.Release
-    unit: str = ""       # after a macro level in the title: "%" for rates, "" for VIX
-    ticker: str | None = None  # stock rules only: Yahoo url and a $ level in the title
+    unit: str = ""       # after a FRED level in the title: "%" for rates, "" for VIX
+    ticker: str | None = None  # the event's ticker: holdings only, so the benchmark stays in Macro
 
 
 # Thresholds are roughly 3-5x a normal day's move (checked on Oct-Nov 2026 data),
@@ -44,7 +44,13 @@ MACRO_RULES = [
     BigMove("fred:DGS10", "10-year Treasury yield", 0.10, change="diff", unit="%"),
     BigMove("fred:DFF", "Fed funds rate", 0.20, change="diff", unit="%"),  # i.e. the Fed moved
     BigMove("fred:VIXCLS", "VIX", 3.0, change="diff"),
+    # The market as a whole. A normal day is under 1%; 2% is a big day for the S&P 500.
+    # No ticker, so it shows under Macro & Market, not as a holding.
+    BigMove("finnhub:SPY", "S&P 500 (SPY)", 2.0, change="pct"),
 ]
+
+# Not a holding: its closing price is fetched with the holdings' only for the rule above.
+BENCHMARK = "SPY"  # an S&P 500 index fund
 
 STOCK_BIG_MOVE_PCT = 5.0  # same for every holding in v1; a per-ticker override can come later
 
@@ -81,14 +87,14 @@ def big_move_event(rule: BigMove, previous: Reading, latest: Reading) -> Event |
 
     direction = "up" if move > 0 else "down"
 
-    # Only FRED and Finnhub produce readings: stock rules have a ticker, macro rules
-    # are FRED series. A new source of readings needs its own branch here.
-    if rule.ticker is not None:
-        url = f"https://finance.yahoo.com/quote/{rule.ticker}"  # price chart and news
+    # "finnhub:SPY" -> ("finnhub", "SPY"). Only FRED and Finnhub produce readings; a
+    # new source needs its own branch here.
+    source, symbol = rule.series.split(":")
+    if source == "finnhub":
+        url = f"https://finance.yahoo.com/quote/{symbol}"  # price chart and news
         level = f"${latest.value:.2f}"
     else:
-        series_id = rule.series.split(":")[1]  # "fred:DGS10" -> "DGS10"
-        url = f"https://fred.stlouisfed.org/series/{series_id}"
+        url = f"https://fred.stlouisfed.org/series/{symbol}"
         level = f"{latest.value:.2f}{rule.unit}"
 
     size_text = f"{size:.2f} points" if rule.change == "diff" else f"{size:.2f}%"
