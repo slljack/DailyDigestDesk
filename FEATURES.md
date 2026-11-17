@@ -130,13 +130,14 @@ Each `desk-collect` run ends by writing one HTML page: `data/digests/<New York d
 - **New since the last page, by when we stored it.** The page shows events with `inserted_at` after the `digest:last` cursor, not `occurred_at`: an earnings result Finnhub fills in two days late keeps its real date but is still news to us. Strictly after (`>`), so an event stored exactly at the cursor was on the last page. The first page, with no cursor, covers the past week.
 - **The cursor moves only after the file is written.** It's set to the time taken just before the query, so an event stored in between lands on two pages at worst, never on none. A failed page is `# ERROR digest page: ...`, and the next run's page shows the same events.
 - **One file per run.** A missed 8am page isn't overwritten by the 5pm one. The name has seconds, so a rerun in the same minute doesn't overwrite either.
+- **`latest.html`** is a copy of the newest page under a fixed name, so one browser bookmark always opens it.
 - **Layout.** "Macro & Market" (events with no ticker) first, then each holding in `holdings.toml` order. A holding with nothing new is left out. A ticker no longer in holdings still shows, after the holdings, A to Z. Newest first within a section, each line a title link plus its New York day.
 - **Only noisy kinds fold.** Two or more insider transactions (Form 4) or big-holder stake filings (all 13D/13G variants) fold into one click-to-open line with a count, using HTML's `<details>`. Everything else, 8-Ks included, gets its own line, so an earnings 8-K is never hidden.
 - **Safe with outside text.** Titles, urls and headings go through `html.escape`, so a `<script>` in a title is shown, not run. Only `http(s)` urls become links, because escaping can't make a `javascript:` url safe to click.
 - **Pure builder, separate writer.** `build_digest(events, now, tickers)` is text in, text out, with no store, files or clock, so its tests are plain strings. `write_digest` does the cursor and the file and takes the builder as a parameter.
 - **HTML and CSS only.** Python writes the page; no JavaScript, no dependencies. Light and dark mode follow the system.
 
-Not yet: explainers per data type, glossary on hover, scheduling, upcoming earnings list, company names next to tickers.
+Not yet: explainers per data type, glossary on hover, upcoming earnings list, company names next to tickers. Scheduling is in the README (macOS launchd).
 
 ### Configuration
 

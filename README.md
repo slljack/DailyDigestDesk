@@ -122,8 +122,26 @@ desk-collect --lookback-days 30         # wider first-run window
 - **FRED** ([fred.py](daily_digest_desk/ingestion/fred.py)). Daily series (`DFF` Fed funds rate, `DGS10` 10-year yield, `VIXCLS` VIX) are stored as readings: history for signal rules, not printed. Monthly releases (`CPIAUCSL` CPI, `PAYEMS` jobs) become one event each, e.g. "CPI (Sep 2026): +0.3% vs prior month".
 - **Finnhub** ([finnhub.py](daily_digest_desk/ingestion/finnhub.py)). Each holding's closing price is stored as a reading (`finnhub:<TICKER>`). A run during market hours (weekdays 9:30–16:00 New York) stores no prices, because the price is still moving; run it before the open or after the close. Earnings become two events: a heads-up in the 7 days before a report ("NVDA is reporting earnings on Nov 17 after market close, EPS 2.53 expected") and the result once it's out ("AAPL beat EPS estimate: 2.10 vs 2.03 expected").
 - **Signals** ([signals.py](daily_digest_desk/signals.py)). After collecting, each new reading is compared with the one before it, and a big move becomes an event: "10-year Treasury yield up 0.12 points to 5.10%", "NVDA down 6.21% to $187.40". Thresholds: 0.10 points for the 10-year yield, 0.20 for Fed funds, 3 for VIX, 5% for each holding. Only readings from the past week are checked, so a first run doesn't report old moves.
-- **Digest page** ([digest.py](daily_digest_desk/output/digest.py)). Each run ends by writing `data/digests/<New York date-time>.html` with everything stored since the last page (the first page covers the past week). Macro & Market first, then each holding with something new; insider transactions and big-holder filings fold into one click-to-open line. The run prints the page's path; open it in a browser. `--digest-dir` writes it somewhere else.
+- **Digest page** ([digest.py](daily_digest_desk/output/digest.py)). Each run ends by writing `data/digests/<New York date-time>.html` (and the same page as `latest.html`) with everything stored since the last page (the first page covers the past week). Macro & Market first, then each holding with something new; insider transactions and big-holder filings fold into one click-to-open line. The run prints the page's path; open it in a browser. `--digest-dir` writes it somewhere else.
 - **Failures don't stop the run.** Each failed ticker or series is listed at the end as `# ERROR <source> <name>: <message>`, and `desk-collect` exits 1.
+
+## Scheduling (macOS)
+
+Run `desk-collect` automatically on weekdays at 8:00am and 5:00pm New York time (before the open, after the close), with a pop-up when the page is ready.
+
+```bash
+scripts/install-schedule.sh ~/miniconda3/envs/daily-digest-desk/bin/desk-collect
+launchctl kickstart gui/$(id -u)/com.dailydigestdesk.collect     # run once now to test
+```
+
+- **launchd, not cron.** If the Mac is asleep at the scheduled time, launchd runs the job when it wakes; cron would skip it. A Mac that's shut down skips the run, but nothing is lost: the next page shows everything since the last one.
+- **Weekdays only.** Weekend filings land on Monday's morning page.
+- **Local time.** launchd uses the Mac's clock, so the installer converts 8:00 and 17:00 New York into this Mac's time zone (6:00 and 15:00 in Denver). Rerun it after changing time zones or moving the project folder.
+- **The template is in the repo; the real job isn't.** [scripts/com.dailydigestdesk.collect.plist.template](scripts/com.dailydigestdesk.collect.plist.template) has placeholders; the installer fills in this Mac's paths and writes `~/Library/LaunchAgents/com.dailydigestdesk.collect.plist`.
+- **What a run does:** [scripts/run-digest.sh](scripts/run-digest.sh) runs `desk-collect` from the project folder, appends its output to `data/logs/desk-collect.log` (API keys redacted), and shows a pop-up, "Daily digest: 13 new items" with **Later** and **Open**. Open opens the new page (or the log, if no page was written); the pop-up closes by itself after 8 hours. A run with errors says so.
+- **Open the newest page with one bookmark.** Each run also saves the page as `data/digests/latest.html`. Open it once and bookmark it: `open data/digests/latest.html`.
+- **Why a pop-up, not a notification.** Current macOS silently drops notifications sent by scripts (`osascript display notification`), even with Script Editor allowed, and `terminal-notifier` no longer registers for notifications. Alerts (`display alert`) still show, and they can have an Open button.
+- **Remove it:** `scripts/install-schedule.sh --uninstall`.
 
 ## Tests
 
@@ -243,4 +261,5 @@ daily_digest_desk/
   output/
     digest.py             # Events -> the digest HTML page
 tests/                    # offline pytest suite
+scripts/                  # run-digest.sh, the launchd template, install-schedule.sh
 ```

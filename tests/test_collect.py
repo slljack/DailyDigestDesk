@@ -98,8 +98,10 @@ def test_next_digest_starts_at_the_cursor(store, monkeypatch, tmp_path):
     assert build.calls == [(["edgar:2"], EVENING)]
     assert path.name == "2026-11-17-170005.html"
     assert sorted(p.name for p in tmp_path.iterdir()) == [  # the morning page is kept
-        "2026-11-17-080012.html", "2026-11-17-170005.html",
+        "2026-11-17-080012.html", "2026-11-17-170005.html", "latest.html",
     ]
+    # latest.html is now the evening page, for a browser bookmark.
+    assert (tmp_path / "latest.html").read_text(encoding="utf-8") == "page: edgar:2"
 
 
 def test_nothing_new_still_writes_a_page(store, tmp_path):

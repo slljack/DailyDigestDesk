@@ -289,6 +289,8 @@ def write_digest(
     # doesn't overwrite the page before it: data/digests/2026-11-17-080012.html
     path = out_dir / f"{now.astimezone(_NEW_YORK):%Y-%m-%d-%H%M%S}.html"
     path.write_text(page, encoding="utf-8")
+    # The same page under a fixed name, so one browser bookmark always opens the newest.
+    (out_dir / "latest.html").write_text(page, encoding="utf-8")
 
     # UTC ISO text, the same format as the store's inserted_at, so `>` compares right.
     store.set_cursor(_DIGEST_CURSOR, now.astimezone(timezone.utc).isoformat())
