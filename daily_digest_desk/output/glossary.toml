@@ -1,0 +1,122 @@
+# Glossary: one-sentence definitions shown when you hover (or tap) a word on the
+# digest page, in item titles and inside the explainer cards.
+#
+# Teaching content, so it's written once and reviewed, like explainers.toml.
+#
+# Each entry: words (how it appears in text; matched as whole words, any case) and
+# definition. Only the first match per line or per card is marked, so the page
+# doesn't fill up with underlines. Longer words win: "adjusted EPS" before "EPS".
+
+# --- Earnings -----------------------------------------------------------------------
+
+[eps]
+words = ["EPS"]
+definition = "Earnings per share: the company's profit for the period divided by its number of shares."
+
+[adjusted-eps]
+words = ["adjusted"]
+definition = "Adjusted EPS leaves out costs the company calls one-time, so it's usually higher than the official (GAAP) number."
+
+[gaap]
+words = ["GAAP"]
+definition = "The official US accounting rules. A company's audited numbers follow them."
+
+[expected]
+words = ["expected", "estimate", "estimates"]
+definition = "What analysts who follow the company expect it to report, averaged together (the \"consensus\")."
+
+[beat-miss]
+words = ["beat", "missed", "miss", "matched"]
+definition = "Whether the reported number came in above (beat), below (missed) or exactly at (matched) the analysts' estimate."
+
+[guidance]
+words = ["guidance"]
+definition = "The company's own forecast for the coming quarter or year, usually given with its earnings."
+
+[market-hours]
+words = ["after market close", "before market open", "during market hours"]
+definition = "Regular US trading is 9:30am to 4:00pm New York time. Results after the close move the price the next morning; before the open, at 9:30 that day."
+
+# --- Filings ------------------------------------------------------------------------
+
+[8-k]
+words = ["8-K"]
+definition = "A filing about an important company event, due within four business days."
+
+[10-q]
+words = ["10-Q"]
+definition = "The quarterly report, for the first three quarters of the year."
+
+[10-k]
+words = ["10-K"]
+definition = "The audited annual report."
+
+[form-4]
+words = ["Form 4", "Form 4s"]
+definition = "The filing an insider makes within two business days of buying, selling or receiving the company's stock."
+
+[13d-13g]
+words = ["13D", "13G"]
+definition = "Filings for owners of more than 5% of a company: 13D if they may try to influence it, 13G if they're passive."
+
+[amended]
+words = ["amended", "amendment"]
+definition = "An updated version of an earlier filing. Its form name ends in /A."
+
+[shelf]
+words = ["shelf", "shelf registration"]
+definition = "Permission to sell new shares or bonds later, in pieces, whenever the company chooses, for up to three years."
+
+[dilution]
+words = ["dilution", "dilute"]
+definition = "When a company issues new shares, each existing share owns a smaller piece of the company."
+
+[non-reliance]
+words = ["non-reliance"]
+definition = "The company says its earlier financial statements were wrong and shouldn't be trusted. Rare and serious."
+
+[insider]
+words = ["insider", "insiders"]
+definition = "An officer, a director, or an owner of more than 10% of the company."
+
+[activist]
+words = ["activist"]
+definition = "An investor who buys a big stake to push the company to change, for example through board seats or a sale."
+
+[index-fund]
+words = ["index funds", "index fund"]
+definition = "A fund that holds every stock in an index, like the S&P 500, instead of picking stocks."
+
+[options]
+words = ["options"]
+definition = "Contracts giving the right to buy or sell a stock at a set price before a set date."
+
+# --- Macro & Market -----------------------------------------------------------------
+
+[treasury]
+words = ["Treasury"]
+definition = "Bonds issued by the US government. Their yields are the benchmark for other interest rates."
+
+[yield]
+words = ["yield", "yields"]
+definition = "The yearly return from buying a bond at today's price and holding it to the end. When bond prices fall, yields rise."
+
+[points]
+words = ["points"]
+definition = "For yields and rates, a point is a percentage point: 4.98% to 5.10% is 0.12 points. For VIX, points are its own units."
+
+[fed]
+words = ["Fed", "Federal Reserve"]
+definition = "The Federal Reserve, the US central bank. It sets short-term interest rates."
+
+[cpi]
+words = ["CPI"]
+definition = "Consumer Price Index: the main US measure of inflation, from the Bureau of Labor Statistics."
+
+[vix]
+words = ["VIX"]
+definition = "A measure of how much investors expect the S&P 500 to swing over the next 30 days. Higher means more fear."
+
+[sp500]
+words = ["S&P 500"]
+definition = "An index of about 500 of the largest US companies, the usual measure of \"the market\"."

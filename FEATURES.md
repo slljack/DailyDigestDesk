@@ -137,8 +137,9 @@ Each `desk-collect` run ends by writing one HTML page: `data/digests/<New York d
 - **Pure builder, separate writer.** `build_digest(events, now, tickers)` is text in, text out, with no store, files or clock, so its tests are plain strings. `write_digest` does the cursor and the file and takes the builder as a parameter.
 - **HTML and CSS only.** Python writes the page; no JavaScript, no dependencies. Light and dark mode follow the system.
 - **Explainers.** Each line has an ⓘ; clicking it opens a small card over the page: what the type is, why stocks care, and what to look for. Esc, a click outside, or ✕ closes it. It's HTML's built-in popover (`popover` / `popovertarget`), so still no JavaScript. Each card is in the page once, hidden, and only for the types on that page. The text lives in [output/explainers.toml](daily_digest_desk/output/explainers.toml), so wording changes need no code; `explainer_key` picks the entry (big moves by series, since a VIX jump and a stock drop need different notes). A test checks that the file and the code name the same entries.
+- **Glossary on hover.** Words like EPS, yield, guidance or dilution get a dotted underline in the titles and inside the explainer cards; hovering (or tapping, or Tab) shows a one-sentence definition. Marked only the first time per line or card, and not in a card about that same thing. The words and definitions live in [output/glossary.toml](daily_digest_desk/output/glossary.toml). Matching runs on the already-escaped text, whole words only and longest first, so "EPS" never matches inside "STEPS" and "S&P 500" is found as `S&amp;P 500`. The tip is CSS only (`data-tip` plus `::after`), no JavaScript.
 
-Not yet: glossary on hover, upcoming earnings list, company names next to tickers. Scheduling is in the README (macOS launchd).
+Not yet: upcoming earnings list, company names next to tickers. Scheduling is in the README (macOS launchd).
 
 ### Configuration
 
