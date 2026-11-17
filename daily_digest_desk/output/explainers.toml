@@ -1,0 +1,107 @@
+# Explainers: one short, plain-language note per type of item on the digest page.
+#
+# Teaching content, so it's written once and reviewed (DESIGN.md: beginners can't
+# spot errors). Edit the wording here; no code changes needed. The page shows only
+# the explainers for types on that page, in this file's order.
+#
+# Each entry: name (the heading), what (what it is), why (why stocks care), and
+# look_for (optional: what to check). Which events use which entry is decided by
+# explainer_key() in digest.py.
+
+# --- Filings (SEC EDGAR) ---------------------------------------------------------
+
+[8-K]
+name = "8-K: a current report"
+what = "A filing a company must make within four business days of something important: earnings, a CEO leaving, a big deal, a bankruptcy. The title says which item it's about. An 8-K/A corrects or adds to an earlier 8-K."
+why = "It's how official news reaches investors between the quarterly reports, so the stock often reacts the same day."
+look_for = "Which item it is. Earnings results (Item 2.02), leadership changes (5.02) and non-reliance on prior financials (4.02, rare and serious) matter most. \"Other events\" (8.01) can be anything."
+
+[form-4]
+name = "Form 4: an insider transaction"
+what = "Filed within two business days when an insider (an officer, a director, or an owner of more than 10%) buys, sells, or is granted the company's stock or options."
+why = "Insiders know the business best. Buying with their own money is rare and often read as confidence. Selling is common and often routine: taxes, diversifying, or a sale planned months ahead."
+look_for = "Buys say more than sells, and many Form 4s are grants or option exercises, not trades. The digest doesn't read the transaction type yet, so open the filing to see."
+
+[13d]
+name = "13D: an active big holder"
+what = "Filed when someone owns more than 5% of a company's shares and may try to influence how it's run. An amendment (/A) means the stake or the plans changed."
+why = "It can mean an activist investor pushing for changes, like board seats, a sale of the company or buybacks. Stocks often move on a new 13D."
+look_for = "Who the filer is and what they say they intend to do (Item 4 of the filing)."
+
+[13g]
+name = "13G: a passive big holder"
+what = "A shorter filing for owners of more than 5% who don't plan to influence the company, usually index funds and large asset managers. An amendment (/A) updates the stake."
+why = "Mostly routine. It shows who the big holders are."
+look_for = "Whether the stake grew or shrank a lot since the last filing."
+
+[10-Q]
+name = "10-Q: the quarterly report"
+what = "Financial statements and management's discussion for one quarter, filed for the first three quarters of the year. Reviewed by the auditor, but not fully audited."
+why = "It has the detailed numbers behind the earnings press release, plus updated risks. It usually comes out with earnings or soon after."
+look_for = "Changes in cash and debt, new risk factors, and anything management calls out as new."
+
+[10-K]
+name = "10-K: the annual report"
+what = "The audited yearly report: full financial statements, a description of the business, risk factors, and management's discussion of the year."
+why = "It's the most complete picture of the company, and where risks must be disclosed."
+look_for = "New or changed risk factors (Item 1A), and management's discussion (Item 7)."
+
+[S-3]
+name = "S-3: permission to sell new shares"
+what = "A registration that lets a company sell new stock or bonds quickly. Often it's a \"shelf\": permission it can use any time over the next three years."
+why = "New shares dilute existing owners: the same company split into more pieces. The stock often falls when a company actually sells shares."
+look_for = "Whether it's only a shelf (no sale yet) or an actual offering, and how big it is compared with the company. Some S-3s only let existing holders resell shares they already own: that adds no new shares, so no dilution."
+
+# --- Earnings (Finnhub) -----------------------------------------------------------
+
+[earnings-headsup]
+name = "Earnings coming up"
+what = "The company reports its quarterly results soon. EPS (earnings per share) is the profit divided by the number of shares, and \"EPS expected\" is analysts' average estimate of it."
+why = "Earnings are one of the biggest scheduled moves for a stock. The price reacts to the results compared with what was expected, not to the results alone."
+look_for = "The date, and whether it's before the market opens or after it closes: that's when the price will react."
+
+[earnings-result]
+name = "Earnings result"
+what = "The company's reported EPS (earnings per share: profit divided by the number of shares) compared with analysts' estimate. \"Beat\" means above the estimate, \"miss\" means below."
+why = "Surprises move prices. But a beat can still fall if revenue or guidance (the company's outlook) disappoints."
+look_for = "Revenue and guidance in the earnings 8-K, not just EPS: it's usually the \"8-K: Earnings results\" line for the same stock, from the same day. Estimates are usually for \"adjusted\" EPS, which leaves out some one-time costs, so it can differ from the official number in the 10-Q."
+
+# --- Macro & Market (FRED) --------------------------------------------------------
+
+[cpi]
+name = "CPI: inflation"
+what = "The Consumer Price Index, from the Bureau of Labor Statistics, tracks the prices of a basket of things people buy. The digest shows the change from the month before. It's released around the middle of each month, for the month before."
+why = "Inflation drives interest rates. Higher-than-expected inflation makes the Fed more likely to keep rates high, which tends to weigh on stocks, especially fast-growing ones."
+look_for = "The surprise compared with economists' forecast, and \"core\" CPI (without food and energy), which markets watch closely. The digest doesn't show either yet."
+
+[jobs]
+name = "Jobs report"
+what = "The monthly employment report from the Bureau of Labor Statistics, usually on the first Friday of the month: how many jobs the economy added, plus the unemployment rate."
+why = "It's a gauge of the economy's strength. Strong job growth is good for profits but can keep interest rates higher for longer. Weak growth can signal a slowdown."
+look_for = "The surprise compared with the forecast, and revisions to earlier months, which can be large."
+
+[10-year-yield]
+name = "10-year Treasury yield"
+what = "The interest rate on 10-year US government bonds, set by trading every day. It's a benchmark for mortgages and company borrowing."
+why = "Higher yields make safe bonds more attractive compared with stocks, raise borrowing costs, and lower what future profits are worth today. Fast-growing companies are hit hardest. A \"point\" here is a percentage point: 4.98% to 5.10% is up 0.12 points. A move of 0.10 points in a day is large."
+look_for = "Whether it moved on a data release (CPI, jobs) or a Fed meeting."
+
+[fed-funds]
+name = "Fed funds rate"
+what = "The rate banks charge each other for overnight loans, which the Federal Reserve steers with its target range (for example 4.25% to 4.50%). It's the Fed's main tool."
+why = "It's the base for most other interest rates. Cuts tend to support stocks; hikes slow the economy to fight inflation. It moves only when the Fed decides, at about eight meetings a year."
+look_for = "What the Fed says about its next moves. Markets often expect a change before it happens."
+
+[vix]
+name = "VIX: the \"fear index\""
+what = "A measure of how much the S&P 500 is expected to swing over the next 30 days, based on options prices. It's a number, not a price: its moves are in points (25.64 to 19.92 is down 5.72 points). Its long-run average is about 20."
+why = "It jumps when investors get nervous, usually while stocks fall. Above 30 means real stress."
+look_for = "Whether your holdings moved with the market or on their own news."
+
+# --- Signals ----------------------------------------------------------------------
+
+[stock-big-move]
+name = "Big move in a holding"
+what = "One of your holdings closed at least 5% above or below its previous close. \"Since\" a date means the move covers several days the digest didn't run."
+why = "A move that big usually has a reason: earnings, company news, or the whole market moving. The price alone doesn't say which."
+look_for = "Other items for the same stock on this page, like an 8-K or earnings. The link opens the price chart and recent news. The digest doesn't compare with the whole market yet: a 5% drop matters less on a day the S&P 500 fell 4%."

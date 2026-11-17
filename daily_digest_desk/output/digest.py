@@ -1,22 +1,73 @@
 """Build the digest page: events in, one HTML page out.
 
-Pure: no store, no files, no clock. collect.write_digest reads the events and
-writes the file; this module only turns them into text.
+No store, no clock, and no files except this package's own explainers.toml.
+collect.write_digest reads the events and writes the file; this module only
+turns them into text.
 """
 
 from __future__ import annotations
 
+import functools
 import html
+import tomllib
+from collections.abc import Mapping
 from datetime import datetime
+from importlib import resources
 from zoneinfo import ZoneInfo
 
 from daily_digest_desk.models import Event
 
 _NEW_YORK = ZoneInfo("America/New_York")
 
+# SEC renamed the forms in 2024 ("SC 13D" -> "SCHEDULE 13D"); both show up.
+_13D_FORMS = ("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")
+_13G_FORMS = ("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")
 
-def _item(event: Event) -> str:
-    """One event as an <li> line: the title (a link if the url is http/https) and its day."""
+Explainers = Mapping[str, Mapping[str, str]]  # key -> {"name", "what", "why", "look_for"}
+
+
+@functools.cache
+def load_explainers() -> dict[str, dict[str, str]]:
+    """The explainers in explainers.toml, in file order. Read once per process."""
+    text = resources.files(__package__).joinpath("explainers.toml").read_text(encoding="utf-8")
+    return tomllib.loads(text)
+
+
+# Which explainer each kind of event uses. Big moves are one kind but four different
+# things (a VIX jump isn't an NVDA drop), so explainer_key picks those by series.
+_EXPLAINER_BY_KIND = {
+    "8-K": "8-K", "8-K/A": "8-K",
+    "4": "form-4",
+    **{form: "13d" for form in _13D_FORMS},
+    **{form: "13g" for form in _13G_FORMS},
+    "10-Q": "10-Q",
+    "10-K": "10-K",
+    "S-3": "S-3",
+    "earnings_headsup": "earnings-headsup",
+    "earnings_result": "earnings-result",
+    "CPIAUCSL": "cpi",
+    "PAYEMS": "jobs",
+}
+_EXPLAINER_BY_SERIES = {
+    "fred:DGS10": "10-year-yield",
+    "fred:DFF": "fed-funds",
+    "fred:VIXCLS": "vix",
+}
+
+
+def explainer_key(event: Event) -> str | None:
+    """The explainer for this event, or None if it has none."""
+    if event.kind == "big_move":
+        series = event.fields.get("series", "")
+        if series.startswith("finnhub:"):
+            return "stock-big-move"
+        return _EXPLAINER_BY_SERIES.get(series)
+    return _EXPLAINER_BY_KIND.get(event.kind)
+
+
+def _item(event: Event, explainers: Explainers | None = None) -> str:
+    """One event as an <li> line: the title (a link if the url is http/https), its day,
+    and an ⓘ button that opens its explainer card, if it has one."""
     # Titles and urls come from outside sources: escape them, so a "<script>" in a
     # title shows up as text instead of running in the browser.
     title = html.escape(event.title)
@@ -30,7 +81,17 @@ def _item(event: Event) -> str:
     if event.url.startswith(("http://", "https://")):
         title = f'<a href="{html.escape(event.url)}">{title}</a>'
 
-    return f'<li>{title} <span class="date">{day}</span></li>'
+    info = ""
+    key = explainer_key(event)
+    if explainers and key in explainers:
+        name = html.escape(explainers[key]["name"])
+        # popovertarget: clicking opens the card with that id (HTML's built-in popover).
+        info = (
+            f' <button type="button" class="info" popovertarget="explain-{html.escape(key)}"'
+            f' title="What is this? {name}" aria-label="What is this? {name}">ⓘ</button>'
+        )
+
+    return f'<li>{title} <span class="date">{day}</span>{info}</li>'
 
 
 # What a folded group is called, by event kind. Several kinds can share a label, so
@@ -39,10 +100,7 @@ def _item(event: Event) -> str:
 _GROUP_LABELS = {
     "8-K": "8-K filings", "8-K/A": "8-K filings",
     "4": "Insider transactions",
-    **{form: "Big-holder stake filings" for form in (
-        "SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A",
-        "SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A",
-    )},
+    **{form: "Big-holder stake filings" for form in _13D_FORMS + _13G_FORMS},
     "10-Q": "Quarterly reports",
     "10-K": "Annual reports",
     "S-3": "Share offering filings",
@@ -64,7 +122,7 @@ def _label(event: Event) -> str:
     return _GROUP_LABELS.get(event.kind, event.kind)
 
 
-def _section(heading: str, events: list[Event]) -> str:
+def _section(heading: str, events: list[Event], explainers: Explainers | None = None) -> str:
     """A heading and its events, newest first. Two or more of a noisy label fold
     into one click-to-open line with a count: "Insider transactions (3)".
     """
@@ -82,11 +140,11 @@ def _section(heading: str, events: list[Event]) -> str:
     for event in newest_first:
         group = noisy.get(_label(event), [])
         if len(group) < 2:
-            lines.append(_item(event))
+            lines.append(_item(event, explainers))
         elif _label(event) not in folded:
             # The whole group goes where its newest event would have been.
             folded.add(_label(event))
-            items = "\n".join(_item(e) for e in group)
+            items = "\n".join(_item(e, explainers) for e in group)
             lines.append(
                 f"<li><details><summary>{html.escape(_label(event))} ({len(group)})</summary>\n"
                 f"<ul>\n{items}\n</ul></details></li>"
@@ -96,13 +154,22 @@ def _section(heading: str, events: list[Event]) -> str:
     return f"<section>\n<h2>{html.escape(heading)}</h2>\n<ul>\n{body}\n</ul>\n</section>"
 
 
-def build_digest(events: list[Event], now: datetime, tickers: list[str]) -> str:
-    """The whole page: Macro & Market first, then each holding in holdings order.
+def build_digest(
+    events: list[Event],
+    now: datetime,
+    tickers: list[str],
+    explainers: Explainers | None = None,
+) -> str:
+    """The whole page: Macro & Market first, then each holding in holdings order,
+    then "What these are": the explainers for the types on this page.
 
     A holding with nothing new is left out. Events for a ticker no longer in
     `tickers` (a holding you removed) still show, after the holdings, A to Z.
     `now` is only for the header; the caller decides which events are new.
+    `explainers` defaults to explainers.toml; tests pass their own.
     """
+    if explainers is None:
+        explainers = load_explainers()
     local = now.astimezone(_NEW_YORK)
     hour = local.hour % 12 or 12  # 0 -> 12am, 13 -> 1pm
     when = f"{local:%a %b} {local.day}, {hour}:{local:%M}{'am' if local.hour < 12 else 'pm'}"
@@ -113,15 +180,15 @@ def build_digest(events: list[Event], now: datetime, tickers: list[str]) -> str:
 
     sections = []
     if None in by_ticker:  # no ticker: FRED releases and macro big moves
-        sections.append(_section("Macro & Market", by_ticker[None]))
+        sections.append(_section("Macro & Market", by_ticker[None], explainers))
     removed = sorted(t for t in by_ticker if t is not None and t not in tickers)
     for ticker in [*tickers, *removed]:
         if ticker in by_ticker:
-            sections.append(_section(ticker, by_ticker[ticker]))
+            sections.append(_section(ticker, by_ticker[ticker], explainers))
 
     if events:
         count = f"{len(events)} new item{'s' if len(events) != 1 else ''}"
-        body = "\n".join(sections)
+        body = "\n".join([*sections, _explainer_cards(events, explainers)])
     else:
         count = "Nothing new since the last digest."
         body = ""
@@ -145,6 +212,31 @@ def build_digest(events: list[Event], now: datetime, tickers: list[str]) -> str:
 """
 
 
+def _explainer_cards(events: list[Event], explainers: Explainers) -> str:
+    """A hidden card per explainer the page's events use, once each, in file order.
+
+    Each card is a popover: hidden until an ⓘ with its id is clicked, then shown over
+    the page. Esc, a click outside, or the ✕ closes it. No JavaScript needed."""
+    used = {explainer_key(e) for e in events}
+    blocks = []
+    for key, entry in explainers.items():
+        if key not in used:
+            continue
+        parts = [
+            f'<div class="explainer" id="explain-{html.escape(key)}" popover>',
+            f'<button type="button" class="close" popovertarget="explain-{html.escape(key)}"'
+            ' popovertargetaction="hide" aria-label="Close">✕</button>',
+            f"<h3>{html.escape(entry['name'])}</h3>",
+            f"<p><strong>What it is.</strong> {html.escape(entry['what'])}</p>",
+            f"<p><strong>Why stocks care.</strong> {html.escape(entry['why'])}</p>",
+        ]
+        if entry.get("look_for"):
+            parts.append(f"<p><strong>What to look for.</strong> {html.escape(entry['look_for'])}</p>")
+        parts.append("</div>")
+        blocks.append("\n".join(parts))
+    return "\n".join(blocks)
+
+
 # Light by default, dark when the system is. Kept small: one column, readable type.
 _STYLE = """
 :root { --bg: #ffffff; --text: #1f2328; --muted: #6e7781; --link: #0969da; --line: #d8dee4; }
@@ -163,5 +255,18 @@ li { margin: 0.35rem 0; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 summary { cursor: pointer; }
+button.info { background: none; border: none; padding: 0 0.2rem; margin-left: 0.2rem;
+              color: var(--muted); font-size: 0.9rem; cursor: pointer; }
+button.info:hover { color: var(--link); }
+/* An explainer card: centred over the page while open (the popover default). */
+.explainer { max-width: min(28rem, calc(100vw - 2rem)); padding: 1rem 1.25rem;
+             background: var(--bg); color: var(--text); border: 1px solid var(--line);
+             border-radius: 10px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); }
+.explainer::backdrop { background: rgba(0, 0, 0, 0.3); }
+.explainer h3 { font-size: 1rem; margin: 0 1.5rem 0.5rem 0; }
+.explainer p { margin: 0.4rem 0; }
+.close { position: absolute; top: 0.6rem; right: 0.7rem; background: none; border: none;
+         color: var(--muted); font-size: 1rem; cursor: pointer; }
+.close:hover { color: var(--text); }
 details ul { margin-top: 0.25rem; }
 """

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run desk-collect once, append its output to a log, and show a notification.
+# Run desk-collect once, append its output to a log, and show a pop-up to open the page.
 #
 # launchd runs this on a schedule (see install-schedule.sh). You can also run it
 # by hand from anywhere: scripts/run-digest.sh
