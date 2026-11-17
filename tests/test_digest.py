@@ -381,3 +381,50 @@ def test_no_word_belongs_to_two_entries():
         for word in entry["words"]:
             assert word.lower() not in owner, f"{word!r} is in {owner.get(word.lower())} and {key}"
             owner[word.lower()] = key
+
+
+# --- red flags ---------------------------------------------------------------------
+
+def flagged(id, hours_ago=1, items=("4.02", "9.01"), ticker="AAPL"):
+    return event(id, kind="8-K", ticker=ticker, hours_ago=hours_ago, title=f"red {id}").model_copy(
+        update={"source": "edgar", "fields": {"items": list(items)}},
+    )
+
+
+def test_red_flag_line_gets_a_label_with_a_tip():
+    line = _item(flagged("1"))
+    assert line.startswith('<li class="flag"><span class="flag-mark term" tabindex="0" data-tip="Rare and')
+    assert '⚠️ Red flag</span> <a href="https://sec.test/x">red 1</a>' in line
+
+
+def test_red_flags_go_first_in_their_section_even_when_older():
+    page = _section("AAPL", [
+        event("new", hours_ago=1, title="new"),
+        flagged("old-flag", hours_ago=50),
+        event("mid", hours_ago=5, title="mid"),
+        flagged("newer-flag", hours_ago=3),  # older than "new", still first
+    ])
+    assert visible_lines(page) == [
+        "AAPL",
+        "⚠️ Red flag red newer-flag Nov 17",  # flags first, newest flag first
+        "⚠️ Red flag red old-flag Nov 15",
+        "new Nov 17",                          # then the rest, newest first
+        "mid Nov 17",
+    ]
+
+
+def test_an_ordinary_8k_is_not_flagged():
+    line = _item(flagged("1", items=("2.02", "9.01")))
+    assert "Red flag" not in line and line.startswith("<li>")
+
+
+def test_header_counts_red_flags():
+    page = build_digest([flagged("1"), flagged("2", ticker="NVDA"), event("3")], NOW, ["AAPL", "NVDA"], {})
+    assert '<p class="meta">Tue Nov 17, 8:00am · 3 new items · ⚠️ 2 red flags</p>' in page
+    one = build_digest([flagged("1")], NOW, ["AAPL"], {})
+    assert '<p class="meta">Tue Nov 17, 8:00am · 1 new item · ⚠️ 1 red flag</p>' in one
+
+
+def test_header_says_nothing_about_red_flags_when_there_are_none():
+    page = build_digest([event("1")], NOW, ["AAPL"], {})
+    assert '<p class="meta">Tue Nov 17, 8:00am · 1 new item</p>' in page

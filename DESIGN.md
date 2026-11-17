@@ -138,6 +138,6 @@ Exact format to be decided once v3 produces real labels.
 
 1. ~~**Web page:** local or hosted? Generated page or web app?~~ Decided — see section 6: generated page for v1, local app at v3, hosted for friends.
 2. ~~**FRED and Finnhub:** which data, exactly, for v1?~~ Decided — see section 4. Daily values become events via signal rules — see section 5. Thresholds for v1 are decided there too.
-3. **Red flags:** in v1 or later?
+3. ~~**Red flags:** in v1 or later?~~ Decided: v1 flags five rare, almost-always-bad 8-K items (1.03 bankruptcy, 2.06 impairment, 3.01 delisting notice, 4.01 auditor change, 4.02 non-reliance). They get a red "⚠️ Red flag" label, go first in their holding's section, and are counted in the page header and the pop-up. It means "read this today", not "sell". More kinds of red flag can come later.
 4. **Thesis history:** when I rewrite a thesis, keep old versions?
-5. **Schedule:** how the two daily runs and the weekly review get triggered (manual first?).
+5. ~~**Schedule:** how the two daily runs and the weekly review get triggered (manual first?).~~ Decided for the daily runs: launchd on my Mac, weekdays at 8:00am and 5:00pm New York, with a pop-up to open the page (README, Scheduling). The weekly review's trigger is still open (v4).

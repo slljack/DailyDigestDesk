@@ -18,6 +18,7 @@ from importlib import resources
 from zoneinfo import ZoneInfo
 
 from daily_digest_desk.models import Event
+from daily_digest_desk.red_flags import is_red_flag
 
 _NEW_YORK = ZoneInfo("America/New_York")
 
@@ -155,7 +156,18 @@ def _item(
             f' title="What is this? {name}" aria-label="What is this? {name}">ⓘ</button>'
         )
 
+    if is_red_flag(event):
+        return (
+            f'<li class="flag"><span class="flag-mark term" tabindex="0" data-tip="{_RED_FLAG_TIP}">'
+            f'⚠️ Red flag</span> {title} <span class="date">{day}</span>{info}</li>'
+        )
     return f'<li>{title} <span class="date">{day}</span>{info}</li>'
+
+
+_RED_FLAG_TIP = html.escape(
+    "Rare and usually bad news, like the company saying its past numbers were wrong. "
+    "Not a reason to sell on its own: read this one today."
+)
 
 
 # What a folded group is called, by event kind. Several kinds can share a label, so
@@ -192,11 +204,14 @@ def _section(
     explainers: Explainers | None = None,
     glossary: Glossary = _NO_GLOSSARY,
 ) -> str:
-    """A heading and its events, newest first. Two or more of a noisy label fold
-    into one click-to-open line with a count: "Insider transactions (3)".
+    """A heading and its events: red flags first, then the rest, each newest first.
+    Two or more of a noisy label fold into one click-to-open line with a count:
+    "Insider transactions (3)".
     """
-    # Newest first; id breaks ties so the order is the same on every run.
+    # Newest first; id breaks ties so the order is the same on every run. Then red
+    # flags move to the top (sorted() is stable, so each part stays newest first).
     newest_first = sorted(events, key=lambda e: (e.occurred_at, e.id), reverse=True)
+    newest_first = sorted(newest_first, key=lambda e: not is_red_flag(e))
 
     # The events of each noisy label, still newest first.
     noisy: dict[str, list[Event]] = {}
@@ -259,6 +274,10 @@ def build_digest(
 
     if events:
         count = f"{len(events)} new item{'s' if len(events) != 1 else ''}"
+        flags = sum(is_red_flag(e) for e in events)
+        if flags:
+            # Plain text: run-digest.sh copies this line into the pop-up.
+            count += f" · ⚠️ {flags} red flag{'s' if flags != 1 else ''}"
         body = "\n".join([*sections, _explainer_cards(events, explainers, terms)])
     else:
         count = "Nothing new since the last digest."
@@ -323,10 +342,10 @@ def _explainer_cards(
 # Light by default, dark when the system is. Kept small: one column, readable type.
 _STYLE = """
 :root { --bg: #ffffff; --text: #1f2328; --muted: #6e7781; --link: #0969da; --line: #d8dee4;
-        --tip-bg: #1f2328; --tip-text: #ffffff; }
+        --tip-bg: #1f2328; --tip-text: #ffffff; --danger: #cf222e; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #0d1117; --text: #e6edf3; --muted: #8d96a0; --link: #4493f8; --line: #30363d;
-          --tip-bg: #e6edf3; --tip-text: #0d1117; }
+          --tip-bg: #e6edf3; --tip-text: #0d1117; --danger: #ff7b72; }
 }
 body { background: var(--bg); color: var(--text); margin: 0 auto; max-width: 46rem;
        padding: 1.5rem 1rem 3rem; font: 16px/1.5 -apple-system, system-ui, sans-serif; }
@@ -364,4 +383,6 @@ details ul { margin-top: 0.25rem; }
   font-size: 0.8rem; font-weight: normal; line-height: 1.35; text-align: left;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); }
 .term:focus { outline: none; }
+/* A red flag: a red label in front of the line, pinned to the top of its section. */
+.flag-mark { color: var(--danger); font-weight: 600; font-size: 0.9rem; }
 """
