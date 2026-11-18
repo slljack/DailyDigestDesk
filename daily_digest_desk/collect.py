@@ -37,6 +37,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -298,6 +299,123 @@ def write_digest(
     return path
 
 
+def new_york_today(now: datetime) -> date:
+    """The date in New York, whatever the Mac's time zone. Filings, prices and
+    earnings are all dated in New York, so a 10pm run in Denver isn't a day behind."""
+    return now.astimezone(_NEW_YORK).date()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class Sources:
+    """The fetchers one run uses. None skips that source (its API key isn't set)."""
+
+    edgar: Fetcher = fetch_edgar_events
+    fred: FredFetcher | None = None
+    quote: FinnhubFetcher | None = None
+    earnings: EarningsFetcher | None = None
+
+
+@dataclass
+class RunResult:
+    new: list[Event]  # every new event: filings, releases, earnings, signals
+    fred_readings: list[Reading]
+    quote_readings: list[Reading]
+    earnings_events: list[Event]
+    signal_events: list[Event]
+    digest_path: Path | None  # None if the page failed
+    errors: dict[str, dict[str, str]]  # source -> {ticker, series or "page": message}
+
+
+def run(
+    store: Store,
+    tickers: list[str],
+    today: date,
+    sources: Sources,
+    digest_dir: Path,
+    lookback_days: int = 7,
+    clock: Callable[[], datetime] = _utc_now,
+) -> RunResult:
+    """One desk-collect run: every collector, then signals, then the digest page.
+
+    Takes its fetchers and clock as arguments, so tests can run it with fakes and
+    no network. The clock is read when each step needs the time, not once at the
+    start: the page's cursor must be later than everything this run stored.
+    """
+    errors: dict[str, dict[str, str]] = {}
+    new, errors["edgar"] = collect_edgar(store, tickers, today, lookback_days, sources.edgar)
+
+    fred_readings: list[Reading] = []
+    if sources.fred:
+        fred_readings, fred_events, errors["fred"] = collect_fred(store, today, sources.fred)
+        new += fred_events
+
+    quote_readings: list[Reading] = []
+    if sources.quote:
+        # The benchmark's close too, for the S&P 500 rule; dict.fromkeys drops it
+        # if it's also a holding.
+        quote_symbols = list(dict.fromkeys([*tickers, signals.BENCHMARK]))
+        quote_readings, errors["finnhub_quotes"] = collect_finnhub(
+            store, quote_symbols, clock(), sources.quote,
+        )
+
+    earnings_events: list[Event] = []
+    if sources.earnings:
+        earnings_events, errors["finnhub_earnings"] = collect_finnhub_earnings(
+            store, tickers, today, sources.earnings,
+        )
+        new += earnings_events
+
+    # After the collectors, so this run's readings are already in the store.
+    rules = signals.MACRO_RULES + signals.stock_rules(tickers)
+    signal_events, errors["signals"] = collect_signals(
+        store, fred_readings + quote_readings, rules, today,
+    )
+    new += signal_events
+
+    # Last, so the page has everything this run stored. A failed page leaves the
+    # digest cursor alone, so the next run's page shows the same events again.
+    digest_path: Path | None = None
+    build = functools.partial(build_digest, tickers=tickers)
+    try:
+        digest_path = write_digest(store, clock(), digest_dir, build)
+        errors["digest"] = {}
+    except Exception as exc:  # noqa: BLE001 — the collected data is already stored
+        log.warning("Digest page failed: %s", exc)
+        errors["digest"] = {"page": str(exc)}
+
+    return RunResult(
+        new, fred_readings, quote_readings, earnings_events, signal_events, digest_path, errors,
+    )
+
+
+def report_lines(result: RunResult, sources: Sources) -> list[str]:
+    """What desk-collect prints: new events, counts, the page, then any errors."""
+    lines = []
+    for e in sorted(result.new, key=lambda e: e.occurred_at):
+        lines.append(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
+    lines.append(f"# {len(result.new)} new event(s)")
+    if sources.fred:
+        lines.append(f"# {len(result.fred_readings)} new FRED reading(s)")
+    else:
+        lines.append("# FRED skipped: set FRED_API_KEY in .env")
+    if sources.quote:
+        lines.append(f"# {len(result.quote_readings)} new Finnhub quote reading(s)")
+        lines.append(f"# {len(result.earnings_events)} new Finnhub earnings event(s), included above")
+    else:
+        lines.append("# Finnhub skipped: set FINNHUB_API_KEY in .env")
+    lines.append(f"# {len(result.signal_events)} new signal event(s), included above")
+    if result.digest_path:
+        lines.append(f"# Digest page: {result.digest_path.resolve()}")
+    for source, source_errors in result.errors.items():
+        for name, msg in source_errors.items():
+            lines.append(f"# ERROR {source} {name}: {msg}")
+    return lines
+
+
 def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -320,75 +438,20 @@ def main() -> None:
     tickers = [h.ticker for h in load_holdings(args.holdings)]
     fred_key = os.environ.get("FRED_API_KEY")
     finnhub_key = os.environ.get("FINNHUB_API_KEY")
-    fred_readings: list[Reading] = []
-    quotes_readings: list[Reading] = []
-    earnings_events: list[Event] = []
-    digest_path: Path | None = None
-    errors: dict[str, dict[str, str]] = {}  # source -> {ticker or series: message}
-    today = date.today()  # one date for every collector, even if the run crosses midnight
+    sources = Sources(
+        fred=functools.partial(fred.fetch_observations, api_key=fred_key) if fred_key else None,
+        quote=functools.partial(finnhub.fetch_quote, api_key=finnhub_key) if finnhub_key else None,
+        earnings=(
+            functools.partial(finnhub.fetch_earnings, api_key=finnhub_key) if finnhub_key else None
+        ),
+    )
+    # One date for every collector, even if the run crosses midnight.
+    today = new_york_today(_utc_now())
     with Store(args.db) as store:
-        new, edgar_errors = collect_edgar(store, tickers, today, args.lookback_days)
-        errors["edgar"] = edgar_errors
-        if fred_key:
-            fetch_fred = functools.partial(fred.fetch_observations, api_key=fred_key)
-            fred_readings, fred_events, fred_errors = collect_fred(store, today, fetch_fred)
-            new += fred_events
-            errors["fred"] = fred_errors
-        if finnhub_key:
-            now = datetime.now(timezone.utc)
-            fetch_quote = functools.partial(finnhub.fetch_quote, api_key=finnhub_key)
-            # The benchmark's close too, for the S&P 500 rule; dict.fromkeys drops it
-            # if it's also a holding.
-            quote_symbols = list(dict.fromkeys([*tickers, signals.BENCHMARK]))
-            quotes_readings, quotes_errors = collect_finnhub(store, quote_symbols, now, fetch_quote)
-            errors["finnhub_quotes"] = quotes_errors
+        result = run(store, tickers, today, sources, Path(args.digest_dir), args.lookback_days)
 
-            fetch_earnings = functools.partial(finnhub.fetch_earnings, api_key=finnhub_key)
-            earnings_events, earnings_errors = collect_finnhub_earnings(
-                store, tickers, today, fetch_earnings,
-            )
-            new += earnings_events
-            errors["finnhub_earnings"] = earnings_errors
-
-        # After the collectors, so this run's readings are already in the store.
-        rules = signals.MACRO_RULES + signals.stock_rules(tickers)
-        signal_events, signal_errors = collect_signals(
-            store, fred_readings + quotes_readings, rules, today,
-        )
-        new += signal_events
-        errors["signals"] = signal_errors
-
-        # Last, so the page has everything this run stored. A failed page leaves the
-        # digest cursor alone, so the next run's page shows the same events again.
-        build = functools.partial(build_digest, tickers=tickers)
-        try:
-            digest_path = write_digest(
-                store, datetime.now(timezone.utc), Path(args.digest_dir), build,
-            )
-            errors["digest"] = {}
-        except Exception as exc:  # noqa: BLE001 — the collected data is already stored
-            log.warning("Digest page failed: %s", exc)
-            errors["digest"] = {"page": str(exc)}
-
-    for e in sorted(new, key=lambda e: e.occurred_at):
-        print(f"{e.occurred_at:%Y-%m-%d %H:%M}Z  {e.title}\n    {e.url}")
-    print(f"# {len(new)} new event(s)")
-    if fred_key:
-        print(f"# {len(fred_readings)} new FRED reading(s)")
-    else:
-        print("# FRED skipped: set FRED_API_KEY in .env")
-    if finnhub_key:
-        print(f"# {len(quotes_readings)} new Finnhub quote reading(s)")
-        print(f"# {len(earnings_events)} new Finnhub earnings event(s), included above")
-    else:
-        print("# Finnhub skipped: set FINNHUB_API_KEY in .env")
-    print(f"# {len(signal_events)} new signal event(s), included above")
-    if digest_path:
-        print(f"# Digest page: {digest_path.resolve()}")
-    for source, source_errors in errors.items():
-        for name, msg in source_errors.items():
-            print(f"# ERROR {source} {name}: {msg}")
-    if any(errors.values()):
+    print("\n".join(report_lines(result, sources)))
+    if any(result.errors.values()):
         sys.exit(1)  # so a scheduler can tell the run had failures
 
 

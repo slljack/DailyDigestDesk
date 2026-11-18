@@ -158,6 +158,15 @@ def test_failed_series_keeps_cursor_and_others_proceed(store):
     assert store.get_cursor("fred:DGS10") is None
 
 
+
+def test_failed_release_is_an_error_and_the_rest_proceed(store):
+    fetch = FakeFred(now={"DGS10": [obs("2026-11-02", "4.98")]}, failing={"CPIAUCSL"})
+    readings, events, errors = collect_fred(store, date(2026, 11, 3), fetch)
+    assert [r.series for r in readings] == ["fred:DGS10"]
+    assert events == []
+    assert errors == {"CPIAUCSL": "boom"}
+    assert store.get_cursor("fred:CPIAUCSL") is None  # retried next run
+
 # --- fetch (network replaced) ----------------------------------------------------------
 
 @pytest.fixture

@@ -147,10 +147,11 @@ def earnings_to_event(row: dict, today: date) -> Event | None:
     if (report_day - today).days > _HEADS_UP_DAYS:
         return None  # too early for a heads-up
     when = _REPORT_HOUR_WORDS.get(row["hour"], "(time not announced)")
+    day = f"{report_day:%b} {report_day.day}"  # "Dec 3", not "Dec 03", like the rest of the page
     if row["epsEstimate"] is None:
-        title = f"{row['symbol']} is reporting earnings on {report_day:%b %d} {when} (no analyst estimate)"
+        title = f"{row['symbol']} is reporting earnings on {day} {when} (no analyst estimate)"
     else:
-        title = f"{row['symbol']} is reporting earnings on {report_day:%b %d} {when}, EPS {row['epsEstimate']:.2f} expected"
+        title = f"{row['symbol']} is reporting earnings on {day} {when}, EPS {row['epsEstimate']:.2f} expected"
 
     return Event(
         id=f"{report_id}:headsup",

@@ -135,6 +135,12 @@ def test_headsup_on_report_day():
     assert event.kind == "earnings_headsup"
 
 
+def test_headsup_full_title_has_no_leading_zero_on_the_day():
+    row = {**NVDA_ROW, "date": "2026-12-03"}
+    event = earnings_to_event(row, date(2026, 11, 30))
+    assert event.title == "NVDA is reporting earnings on Dec 3 after market close, EPS 2.53 expected"
+
+
 def test_headsup_with_no_estimate():
     today = date(2026, 11, 10)
     row = {**NVDA_ROW, "epsEstimate": None}

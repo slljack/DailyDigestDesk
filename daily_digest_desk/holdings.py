@@ -14,12 +14,23 @@ class Holding:
 
 
 def load_holdings(path: str | Path) -> list[Holding]:
+    """The positions in file order, tickers upper-cased.
+
+    A ticker listed twice is kept once (the first), so nothing is fetched twice.
+    A missing or blank ticker is an error, not a silent empty fetch.
+    """
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    holdings = [
-        Holding(ticker=p["ticker"].upper(), weight=float(p.get("weight", 0.0)))
-        for p in data.get("position", [])
-    ]
+    holdings: list[Holding] = []
+    seen: set[str] = set()
+    for i, position in enumerate(data.get("position", []), start=1):
+        ticker = str(position.get("ticker", "")).strip().upper()
+        if not ticker:
+            raise ValueError(f"Position {i} in {path} has no ticker")
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        holdings.append(Holding(ticker=ticker, weight=float(position.get("weight", 0.0))))
     if not holdings:
         raise ValueError(f"No [[position]] entries in {path}")
     return holdings
