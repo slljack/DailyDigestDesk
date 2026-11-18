@@ -255,6 +255,7 @@ daily_digest_desk/
   ingestion/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)
     edgar_events.py       # EDGAR filings -> Events (8-K item labels, forms)
+    edgar_text.py         # A filing's text for summaries (main doc + EX-99, trimmed)
     fred.py               # FRED series -> Readings (daily) and Events (monthly releases)
     finnhub.py            # Finnhub quotes -> closing-price Readings; earnings -> Events
     concept_map.py        # Semantic metric -> XBRL tag fallback chains
