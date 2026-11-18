@@ -3,7 +3,7 @@
 Two kinds of series, handled differently:
 
 - Daily series (10Y yield, Fed funds rate, VIX) change every day, so each value is
-  stored as a Reading. Signal rules (not built yet) turn changes into Events.
+  stored as a Reading. signals.py turns big day-to-day changes into Events.
 - Monthly releases (CPI, jobs) happen once a month and are news by themselves,
   so each new release becomes one Event, with the change vs the prior month.
 

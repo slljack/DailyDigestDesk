@@ -3,7 +3,6 @@
 Public surface:
     Store(path)
     store.add(events)                     -> list[Event]    (only the new ones)
-    store.events_since(since, tickers)    -> list[Event]
     store.events_inserted_since(since)    -> list[Event]    (stored after `since`)
     store.add_readings(readings)          -> list[Reading]  (only the new ones)
     store.readings_since(series, since)   -> list[Reading]
@@ -104,23 +103,6 @@ class Store:
                 if cur.rowcount == 1:
                     new.append(e)
         return new
-
-    def events_since(
-        self,
-        since: datetime,
-        tickers: Iterable[str] | None = None,
-    ) -> list[Event]:
-        """Events with occurred_at >= since, oldest first. Optionally filter by ticker."""
-        sql = (
-            f"SELECT {_EVENT_COLUMNS} FROM events WHERE occurred_at >= ?"
-        )
-        params: list[str] = [_iso(since)]
-        if tickers is not None:
-            tickers = list(tickers)
-            sql += f" AND ticker IN ({','.join('?' * len(tickers))})"
-            params.extend(tickers)
-        sql += " ORDER BY occurred_at, id"
-        return [_row_to_event(r) for r in self._conn.execute(sql, params)]
 
     def events_inserted_since(self, since: datetime) -> list[Event]:
         """Events stored after `since`, oldest stored first. For "new since the last digest".

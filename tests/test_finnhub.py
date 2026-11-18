@@ -214,6 +214,7 @@ def test_fetch_earnings_sends_window_and_returns_rows(fake_finnhub):
     url = fake_finnhub["url"]
     assert "/calendar/earnings?" in url
     assert "symbol=IREN" in url
+    assert "token=test-key" in url
     assert "from=2026-11-01" in url               # today - 7 days
     assert "to=2026-11-15" in url                 # today + 7 days
 

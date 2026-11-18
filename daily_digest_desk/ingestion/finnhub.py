@@ -41,23 +41,23 @@ _REPORT_HOUR_WORDS = {
 _API_BASE = "https://finnhub.io/api/v1"
 
 
+def _get(path: str, params: dict[str, str], api_key: str) -> dict:
+    """One Finnhub API call: GET {_API_BASE}{path} with the key added, as parsed JSON."""
+    query = urllib.parse.urlencode({**params, "token": api_key})
+    # Errors raised here (HTTPError, URLError) don't include the URL, so the key isn't leaked.
+    with urllib.request.urlopen(f"{_API_BASE}{path}?{query}", timeout=30) as resp:
+        return json.load(resp)
+
+
 def fetch_quote(ticker: str, api_key: str) -> dict:
     """Finnhub's latest quote for one ticker, e.g. {"c": 181.6, "t": 1793912400, ...}.
 
     Raises ValueError for a ticker Finnhub doesn't know (it answers with all zeros).
     """
-    params = {
-        "symbol": ticker,
-        "token": api_key,
-    }
-
-    query = urllib.parse.urlencode(params)
-    # Errors raised here (HTTPError, URLError) don't include the URL, so the key isn't leaked.
-    with urllib.request.urlopen(f"{_API_BASE}/quote?{query}", timeout=30) as resp:
-        quote = json.load(resp)
-        if quote["t"] == 0:
-            raise ValueError(f"Finnhub has no quote for {ticker!r} (unknown ticker?)")
-        return quote
+    quote = _get("/quote", {"symbol": ticker}, api_key)
+    if quote["t"] == 0:
+        raise ValueError(f"Finnhub has no quote for {ticker!r} (unknown ticker?)")
+    return quote
 
 
 def fetch_earnings(ticker: str, today: date, api_key: str) -> list[dict]:
@@ -67,15 +67,10 @@ def fetch_earnings(ticker: str, today: date, api_key: str) -> list[dict]:
     """
     params = {
         "symbol": ticker,
-        "token": api_key,
         "from": (today - timedelta(days=_LOOKBACK_DAYS)).isoformat(),
         "to": (today + timedelta(days=_HEADS_UP_DAYS)).isoformat(),
     }
-
-    query = urllib.parse.urlencode(params)
-    with urllib.request.urlopen(f"{_API_BASE}/calendar/earnings?{query}", timeout=30) as resp:
-        earnings = json.load(resp)
-        return earnings["earningsCalendar"]
+    return _get("/calendar/earnings", params, api_key)["earningsCalendar"]
 
 
 def quote_to_reading(ticker: str, quote: dict, now: datetime) -> Reading | None:
