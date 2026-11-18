@@ -251,6 +251,7 @@ daily_digest_desk/
   holdings.py             # holdings.toml loader
   signals.py              # Signal rules: readings -> Events (big moves)
   red_flags.py            # Which events are red flags (five serious 8-K items)
+  forms.py                # SEC form families (13D/13G spellings, 424B), shared
   ingestion/
     edgar.py              # edgartools wrapper (filings + XBRL + sections)
     edgar_events.py       # EDGAR filings -> Events (8-K item labels, forms)
@@ -261,8 +262,11 @@ daily_digest_desk/
     grounding.py          # (stub) ground claims in source filings
   output/
     digest.py             # Events -> the digest HTML page
+    explainers.py         # The ⓘ buttons and explainer cards
     explainers.toml       # Explainer text per type of item (edit wording here)
+    glossary.py           # Hover tips for glossary words
     glossary.toml         # Hover definitions for words on the page
+    style.css             # The page's look (light and dark)
 tests/                    # offline pytest suite
 scripts/                  # run-digest.sh, the launchd template, install-schedule.sh
 ```

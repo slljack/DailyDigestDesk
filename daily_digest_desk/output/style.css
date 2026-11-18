@@ -1,0 +1,44 @@
+:root { --bg: #ffffff; --text: #1f2328; --muted: #6e7781; --link: #0969da; --line: #d8dee4;
+        --tip-bg: #1f2328; --tip-text: #ffffff; --danger: #cf222e; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --text: #e6edf3; --muted: #8d96a0; --link: #4493f8; --line: #30363d;
+          --tip-bg: #e6edf3; --tip-text: #0d1117; --danger: #ff7b72; }
+}
+body { background: var(--bg); color: var(--text); margin: 0 auto; max-width: 46rem;
+       padding: 1.5rem 1rem 3rem; font: 16px/1.5 -apple-system, system-ui, sans-serif; }
+h1 { font-size: 1.5rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; padding-bottom: 0.25rem;
+     border-bottom: 1px solid var(--line); }
+.meta, .date { color: var(--muted); }
+.date { font-size: 0.85rem; margin-left: 0.4rem; white-space: nowrap; }
+ul { padding-left: 1.2rem; margin: 0; }
+li { margin: 0.35rem 0; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+summary { cursor: pointer; }
+button.info { background: none; border: none; padding: 0 0.2rem; margin-left: 0.2rem;
+              color: var(--muted); font-size: 0.9rem; cursor: pointer; }
+button.info:hover { color: var(--link); }
+/* An explainer card: centred over the page while open (the popover default). */
+.explainer { max-width: min(28rem, calc(100vw - 2rem)); padding: 1rem 1.25rem;
+             background: var(--bg); color: var(--text); border: 1px solid var(--line);
+             border-radius: 10px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); }
+.explainer::backdrop { background: rgba(0, 0, 0, 0.3); }
+.explainer h3 { font-size: 1rem; margin: 0 1.5rem 0.5rem 0; }
+.explainer p { margin: 0.4rem 0; }
+.close { position: absolute; top: 0.6rem; right: 0.7rem; background: none; border: none;
+         color: var(--muted); font-size: 1rem; cursor: pointer; }
+.close:hover { color: var(--text); }
+details ul { margin-top: 0.25rem; }
+/* A glossary word: dotted underline; hover, tap or Tab shows its definition below it. */
+.term { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help;
+        position: relative; }
+.term:hover::after, .term:focus::after {
+  content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 4px); z-index: 10;
+  width: max-content; max-width: min(18rem, 80vw); white-space: normal; pointer-events: none;
+  padding: 0.4rem 0.6rem; border-radius: 6px; background: var(--tip-bg); color: var(--tip-text);
+  font-size: 0.8rem; font-weight: normal; line-height: 1.35; text-align: left;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2); }
+.term:focus { outline: none; }
+/* A red flag: a red label in front of the line, pinned to the top of its section. */
+.flag-mark { color: var(--danger); font-weight: 600; font-size: 0.9rem; }
