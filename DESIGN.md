@@ -32,6 +32,7 @@ Status: design agreed 2026-11-02. Decisions below; open questions at the end.
 |---|---|---|
 | **v1** | Gather events and display them on a web page, grouped by holding. Teaching: an **explainer per data type** (click "CPI" → what it is, why stocks care) and a **glossary on hover** (EPS, 8-K, yield…) | Event layer (EDGAR built) |
 | **v2** | Language model writes a plain-English, **beginner-level summary** of each event, checked against the source | v1 |
+| After v2 | **Themes and news**: each holding gets themes ("AI cloud", "bitcoin") and a short profile; news and free analysis come in as a new source; the language model scores how relevant each item is to each holding, with a one-line reason. Details in section 7 | v2 |
 | **v3** | I write a **thesis** per holding. Language model labels each event: *strengthens / weakens / breaks / neutral*, with a reason | v2 + stored theses |
 | **v4** | **Weekly thesis review** per holding, plus a **weekly lesson** built from that week's real events | v3 |
 | Later | Quick-skim view; importance scoring / ranking | Real data from v1–v4 |
@@ -113,7 +114,34 @@ Grouped **by holding**, with one shared section on top. Same-kind items collapse
 
 Later, sorted within each holding — likely by thesis label first ("breaks" at the top).
 
-## 7. Weekly thesis review (v4)
+## 7. Event summaries (v2)
+
+v1 titles say *that* something happened ("AAOI 8-K: Material agreement"), not *what*; explainers describe the type, the same for every 8-K. v2 adds a short summary of what each filing actually says.
+
+**Only summarization.** No relevance scoring, news, thesis or opinions in v2; those come after (see below).
+
+| Decision | Choice |
+|---|---|
+| Model | Claude Opus 5.5 (`claude-opus-5-5`), effort tuned on the eval. Cheaper models are tried only when the eval shows they do as well |
+| What gets a summary | Free-text filings: 8-K / 6-K, 10-Q / 10-K, 13D, S-3 / 424B. Not big moves, FRED releases or earnings results (already clear sentences). Form 4 is structured data, so code describes it, not the model |
+| What the model reads | The right part, not the whole filing: an 8-K's own text plus its press release (Exhibit 99.1) if it has one; a 10-Q / 10-K's management discussion section |
+| What comes back | A fixed format: `summary` (2-3 plain-English sentences for a beginner) and `key_numbers`, each with the exact sentence from the filing it came from |
+| Checking | Code checks every quote appears word for word in the filing and every number appears in its quote. A summary that fails is not shown |
+| Storage | A `summaries` table: event id, summary, key numbers, model, prompt version, time. Facts and model output stay apart (section 2) |
+| When | Inside `desk-collect`, after events are stored, before the page. Only events without a summary are sent, so a second run costs almost nothing |
+| Failures | The page still comes out, without that summary; the next run retries |
+| Cost | Roughly $0.10-0.50 a day at today's holdings (5-15 new filings). A daily cap keeps a busy day from surprising me |
+| Eval | About 20 real events, hand-checked: correct? anything important missing? anything made up? easy to understand? Rerun after every prompt or model change |
+
+**After v2: themes, news and relevance.** The goal is everything important about my holdings in a day, including news that never names them ("Microsoft cuts data center leases" matters for NBIS and IREN).
+
+- **Holding profiles and themes.** A short profile per holding (what it does, big customers, themes), drafted by the model from the 10-K and reviewed by me. The model reasons from the profile, not its memory.
+- **Sources.** Finnhub company news, free feeds, and filings from companies that drive mine (the big AI spenders' capex). Paid content only as headline and link. Analysis is labeled as opinion.
+- **Relevance.** Duplicate stories merged first, then the model gives each item a 0-3 score per holding with a one-line reason. The reason makes a bad link visible.
+- **Eval.** About 50 real stories I label myself; misses count more than false alarms.
+- **No fine-tuning.** Facts change daily, so they go in with each request; a general model with good context and an eval beats a fine-tuned one here, and upgrades are one line.
+
+## 8. Weekly thesis review (v4)
 
 Runs **weekly**. Goal: help me **maintain my thesis and manage my portfolio**. Tentative output per holding:
 
@@ -123,18 +151,18 @@ Runs **weekly**. Goal: help me **maintain my thesis and manage my portfolio**. T
 
 Exact format to be decided once v3 produces real labels.
 
-## 8. Deferred on purpose
+## 9. Deferred on purpose
 
 | Item | Why deferred |
 |---|---|
 | Quick-skim view | Needs a way to pick the top items; decide after seeing real data |
 | Importance score / ranking | Same; thesis labels may replace a generic score |
-| Connecting macro news to specific holdings (e.g. CPI → NVDA) | Needs the language model and per-holding context |
+| Connecting macro news to specific holdings (e.g. CPI → NVDA) | Planned after v2 (section 7): holding profiles and relevance scores |
 | Red-flag rules (e.g. 8-K item 4.02 always flagged) | Open: v1 or later |
 | Obsidian notes | Dropped — the web page replaces them |
 | Multiple users | Later; keep holdings per person so it's possible |
 
-## 9. Open questions
+## 10. Open questions
 
 1. ~~**Web page:** local or hosted? Generated page or web app?~~ Decided — see section 6: generated page for v1, local app at v3, hosted for friends.
 2. ~~**FRED and Finnhub:** which data, exactly, for v1?~~ Decided — see section 4. Daily values become events via signal rules — see section 5. Thresholds for v1 are decided there too.
