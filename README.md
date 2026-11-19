@@ -34,6 +34,7 @@ SEC requires every API caller to identify themselves via `User-Agent`. Put yours
 EDGAR_USER_AGENT=Your Name your@email.com
 FRED_API_KEY=your-32-character-key      # optional; free at https://fred.stlouisfed.org/docs/api/api_key.html
 FINNHUB_API_KEY=your-key                # optional; free at https://finnhub.io/register
+ANTHROPIC_API_KEY=your-key              # for event summaries (v2, not wired in yet); paid, https://console.anthropic.com
 ```
 
 Without `FRED_API_KEY` or `FINNHUB_API_KEY`, `desk-collect` skips that source and says so.
@@ -261,6 +262,7 @@ daily_digest_desk/
     concept_map.py        # Semantic metric -> XBRL tag fallback chains
   reasoning/
     grounding.py          # (stub) ground claims in source filings
+    summarize.py          # A filing -> a checked plain-English Summary (Claude)
   output/
     digest.py             # Events -> the digest HTML page
     explainers.py         # The ⓘ buttons and explainer cards
