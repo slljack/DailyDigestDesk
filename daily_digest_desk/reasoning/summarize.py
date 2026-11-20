@@ -58,7 +58,17 @@ say so in one sentence.
 
 
 class SummaryError(Exception):
-    """The model gave no usable summary: it refused, or its answer was cut off."""
+    """No usable summary: the model refused, its answer was cut off, or it failed
+    the checks even after the retry.
+
+    It carries the tokens spent getting there, since a failed call still costs
+    money and the run's cost cap has to count it.
+    """
+
+    def __init__(self, message: str, input_tokens: int = 0, output_tokens: int = 0):
+        super().__init__(message)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
 
 class KeyNumber(BaseModel):
@@ -176,19 +186,36 @@ def check_summary(summary: Summary, documents: dict[str, str]) -> list[str]:
     return problems
 
 
-def summarize(event: Event, documents: dict[str, str], client) -> SummaryResult:
+def _tokens(usage) -> tuple[int, int]:
+    """Input and output tokens for every attempt in one call.
+
+    If the first model declined and a fallback model answered, top-level usage
+    covers only the fallback's attempt; usage.iterations lists every attempt,
+    the declined one included. Count them all: the cap should never undercount.
+    """
+    attempts = getattr(usage, "iterations", None) or [usage]
+    return sum(a.input_tokens for a in attempts), sum(a.output_tokens for a in attempts)
+
+
+def summarize(
+    event: Event, documents: dict[str, str], client, feedback: str | None = None,
+) -> SummaryResult:
     """Ask Claude for a Summary of one event's filing, with the model and token counts.
 
     `documents` is trim_documents' output. `client` is an anthropic.Anthropic();
     it's passed in so tests can hand in a fake one and never call the real API.
+    `feedback`, for a retry, is added after the filing (see _retry_note).
     Raises SummaryError if the model refused or ran out of room. The quotes
-    aren't checked here: that's the caller's next step.
+    aren't checked here: summarize_checked does that.
     """
+    content = _message_text(event, documents)
+    if feedback:
+        content += "\n\n" + feedback
     response = client.beta.messages.parse(
         model=MODEL,
         max_tokens=16_000,  # room for the model's thinking plus the short answer
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _message_text(event, documents)}],
+        messages=[{"role": "user", "content": content}],
         output_format=Summary,  # the API makes the answer fit this shape
         output_config={"effort": EFFORT},
         # If the model declines (its safety checks can misfire on harmless text),
@@ -197,17 +224,70 @@ def summarize(event: Event, documents: dict[str, str], client) -> SummaryResult:
         fallbacks="default",
     )
 
+    # Counted first: a call that ends in an error below still cost this much.
+    input_tokens, output_tokens = _tokens(response.usage)
+
     # Check why it stopped before reading the answer: a refused or cut-off
     # answer may not fit the Summary shape at all.
     if response.stop_reason == "refusal":
-        raise SummaryError(f"Model refused to summarize {event.id}")
-    if response.stop_reason == "max_tokens":
-        raise SummaryError(f"Answer was cut off for {event.id}")
-    if response.parsed_output is None:
-        raise SummaryError(f"No summary in the answer for {event.id} ({response.stop_reason})")
-    return SummaryResult(
-        summary=response.parsed_output,
-        model=response.model,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
+        message = f"Model refused to summarize {event.id}"
+    elif response.stop_reason == "max_tokens":
+        message = f"Answer was cut off for {event.id}"
+    elif response.parsed_output is None:
+        message = f"No summary in the answer for {event.id} ({response.stop_reason})"
+    else:
+        return SummaryResult(
+            summary=response.parsed_output,
+            model=response.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    raise SummaryError(message, input_tokens, output_tokens)
+
+
+def _retry_note(summary: Summary, problems: list[str]) -> str:
+    """What the retry adds after the filing: the failed answer and its problems.
+
+    The model remembers nothing between calls, so the retry is a fresh request:
+    the same filing again, plus this note.
+    """
+    listed = "\n".join(f"- {p}" for p in problems)
+    return (
+        "Your previous answer, below, failed the code checks. Write a new answer "
+        "that fixes every problem listed. Copy quotes exactly from the documents "
+        "above, and keep only numbers that are in your quotes.\n\n"
+        f"<previous_answer>\n{summary.model_dump_json(indent=2)}\n</previous_answer>\n\n"
+        f"<problems>\n{listed}\n</problems>"
     )
+
+
+def summarize_checked(event: Event, documents: dict[str, str], client) -> SummaryResult:
+    """A Summary that passed check_summary, retrying once with the problems.
+
+    The tokens returned (or carried by a SummaryError) cover every call made,
+    so the summaries table and the cost cap see what this filing really cost.
+    Raises SummaryError if a call gives no usable answer, or if the retry
+    still fails the checks. A refusal or cut-off isn't retried: the API has
+    already tried the fallback model, and the same filing would be cut off again.
+    """
+    first = summarize(event, documents, client)
+    problems = check_summary(first.summary, documents)
+    if not problems:
+        return first
+
+    try:
+        second = summarize(event, documents, client, feedback=_retry_note(first.summary, problems))
+    except SummaryError as exc:
+        exc.input_tokens += first.input_tokens
+        exc.output_tokens += first.output_tokens
+        raise
+    input_tokens = first.input_tokens + second.input_tokens
+    output_tokens = first.output_tokens + second.output_tokens
+
+    problems = check_summary(second.summary, documents)
+    if problems:
+        raise SummaryError(
+            f"Summary for {event.id} failed its checks twice: " + "; ".join(problems),
+            input_tokens, output_tokens,
+        )
+    return SummaryResult(second.summary, second.model, input_tokens, output_tokens)

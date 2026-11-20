@@ -7,7 +7,8 @@ from daily_digest_desk.models import Event
 from daily_digest_desk.reasoning import summarize as summarize_module
 from daily_digest_desk.reasoning.summarize import (
     MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary, SummaryError, SummaryResult,
-    _message_text, _normalize, _NUMBER, check_summary, summarize,
+    _message_text, _normalize, _NUMBER, _retry_note, _tokens, check_summary, summarize,
+    summarize_checked,
 )
 
 
@@ -237,16 +238,20 @@ def test_key_numbers_up_to_the_limit_pass_and_one_more_fails():
 # --- summarize: with a fake client ---------------------------------------------------
 
 class FakeClient:
-    """Stands in for anthropic.Anthropic(): answers every call with `response`
-    and remembers what was sent."""
+    """Stands in for anthropic.Anthropic(): gives the responses in order, one per
+    call, and remembers what each call sent (`calls`; `sent` is the last one)."""
 
-    def __init__(self, response):
-        self.response, self.sent = response, None
+    def __init__(self, *responses):
+        self.responses, self.calls = list(responses), []
         self.beta = SimpleNamespace(messages=SimpleNamespace(parse=self._parse))
 
+    @property
+    def sent(self):
+        return self.calls[-1]
+
     def _parse(self, **kwargs):
-        self.sent = kwargs
-        return self.response
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
 
 
 def answer(stop_reason="end_turn", parsed_output=None, model="claude-opus-5-5",
@@ -289,13 +294,111 @@ def test_summarize_sends_the_prompt_the_filing_and_the_shape():
 ])
 def test_summarize_raises_when_the_model_gives_no_usable_answer(stop_reason, message):
     # A refused or cut-off answer is an error even if something was parsed.
-    client = FakeClient(answer(stop_reason, parsed_output=summary()))
+    client = FakeClient(answer(stop_reason, parsed_output=summary(),
+                               input_tokens=28_131, output_tokens=496))
     with pytest.raises(SummaryError, match=message) as error:
         summarize(event(), DOCS, client)
     assert event().id in str(error.value)
+    # The call still cost money, so the error says how much.
+    assert (error.value.input_tokens, error.value.output_tokens) == (28_131, 496)
 
 
 def test_summarize_raises_when_there_is_no_summary_in_the_answer():
-    client = FakeClient(answer("end_turn", parsed_output=None))
-    with pytest.raises(SummaryError, match="No summary"):
+    client = FakeClient(answer("end_turn", parsed_output=None, input_tokens=100, output_tokens=7))
+    with pytest.raises(SummaryError, match="No summary") as error:
         summarize(event(), DOCS, client)
+    assert (error.value.input_tokens, error.value.output_tokens) == (100, 7)
+
+
+def test_summarize_adds_the_feedback_after_the_filing():
+    client = FakeClient(answer(parsed_output=summary()))
+    summarize(event(), DOCS, client, feedback="Fix these.")
+    assert client.sent["messages"] == [
+        {"role": "user", "content": _message_text(event(), DOCS) + "\n\nFix these."},
+    ]
+
+
+# --- _tokens: every attempt in one call ----------------------------------------------
+
+def test_tokens_without_iterations_is_the_top_level_usage():
+    assert _tokens(SimpleNamespace(input_tokens=100, output_tokens=7)) == (100, 7)
+
+
+def test_tokens_with_a_fallback_counts_the_declined_attempt_too():
+    # Opus declined after reading the filing; the fallback model then answered.
+    # Top-level usage is only the fallback's attempt; iterations has both.
+    usage = SimpleNamespace(
+        input_tokens=28_000, output_tokens=500,
+        iterations=[
+            SimpleNamespace(type="message", input_tokens=28_000, output_tokens=40),
+            SimpleNamespace(type="fallback_message", input_tokens=28_000, output_tokens=500),
+        ],
+    )
+    assert _tokens(usage) == (56_000, 540)
+
+
+def test_tokens_with_empty_iterations_is_the_top_level_usage():
+    usage = SimpleNamespace(input_tokens=100, output_tokens=7, iterations=[])
+    assert _tokens(usage) == (100, 7)
+
+
+# --- _retry_note ---------------------------------------------------------------------
+
+def test_retry_note_holds_the_failed_answer_and_every_problem():
+    note = _retry_note(summary(), ["summary: '25' is not in any quote", "8-K: quote not found"])
+    assert summary().model_dump_json(indent=2) in note
+    assert "- summary: '25' is not in any quote\n- 8-K: quote not found" in note
+
+
+# --- summarize_checked: check, and retry once with the problems ----------------------
+
+BAD = summary("Revenue was $57.0 billion on October 25.")  # 25 is in no quote
+BAD_PROBLEMS = ["summary: '25' is not in any quote"]
+
+
+def test_summarize_checked_passing_first_time_makes_one_call():
+    client = FakeClient(answer(parsed_output=summary(), input_tokens=100, output_tokens=7))
+    assert summarize_checked(event(), DOCS, client) == SummaryResult(summary(), "claude-opus-5-5", 100, 7)
+    assert len(client.calls) == 1
+
+
+def test_summarize_checked_retries_with_the_problems_and_adds_up_both_calls():
+    client = FakeClient(
+        answer(parsed_output=BAD, input_tokens=100, output_tokens=7),
+        answer(parsed_output=summary(), model="claude-fallback-model", input_tokens=200, output_tokens=9),
+    )
+    result = summarize_checked(event(), DOCS, client)
+    # The second summary, from whichever model wrote it, with both calls' tokens.
+    assert result == SummaryResult(summary(), "claude-fallback-model", 300, 16)
+    retry = client.calls[1]["messages"][0]["content"]
+    assert retry == _message_text(event(), DOCS) + "\n\n" + _retry_note(BAD, BAD_PROBLEMS)
+
+
+def test_summarize_checked_failing_twice_raises_with_the_problems_and_both_calls():
+    client = FakeClient(
+        answer(parsed_output=BAD, input_tokens=100, output_tokens=7),
+        answer(parsed_output=BAD, input_tokens=200, output_tokens=9),
+    )
+    with pytest.raises(SummaryError, match="failed its checks twice") as error:
+        summarize_checked(event(), DOCS, client)
+    assert event().id in str(error.value)
+    assert BAD_PROBLEMS[0] in str(error.value)
+    assert (error.value.input_tokens, error.value.output_tokens) == (300, 16)
+
+
+def test_summarize_checked_does_not_retry_a_refusal():
+    client = FakeClient(answer("refusal", input_tokens=100, output_tokens=7))
+    with pytest.raises(SummaryError, match="refused") as error:
+        summarize_checked(event(), DOCS, client)
+    assert len(client.calls) == 1
+    assert (error.value.input_tokens, error.value.output_tokens) == (100, 7)
+
+
+def test_summarize_checked_retry_that_is_refused_counts_both_calls():
+    client = FakeClient(
+        answer(parsed_output=BAD, input_tokens=100, output_tokens=7),
+        answer("refusal", input_tokens=200, output_tokens=9),
+    )
+    with pytest.raises(SummaryError, match="refused") as error:
+        summarize_checked(event(), DOCS, client)
+    assert (error.value.input_tokens, error.value.output_tokens) == (300, 16)
