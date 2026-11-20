@@ -26,8 +26,8 @@ def make_event(id: str = "edgar:1", ticker: str = "AAPL", day: int = 1, **kw) ->
     )
 
 
-def add_at(store, monkeypatch, when, events):
-    """store.add(events), with inserted_at = `when` instead of the real now."""
+def freeze_clock(monkeypatch, when):
+    """From here on in the test, the store's "now" (its inserted_at) is `when`."""
 
     class FrozenClock(datetime):
         @classmethod
@@ -35,4 +35,9 @@ def add_at(store, monkeypatch, when, events):
             return when
 
     monkeypatch.setattr(store_module, "datetime", FrozenClock)
+
+
+def add_at(store, monkeypatch, when, events):
+    """store.add(events), with inserted_at = `when` instead of the real now."""
+    freeze_clock(monkeypatch, when)
     return store.add(events)

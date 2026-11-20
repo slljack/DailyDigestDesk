@@ -1,11 +1,13 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
 
 from daily_digest_desk.models import Event
+from daily_digest_desk.reasoning.summarize import KeyNumber, Summary
 from daily_digest_desk.store import Store
-from conftest import add_at, make_event
+from conftest import add_at, freeze_clock, make_event
 
 
 def test_add_returns_only_new_events(store):
@@ -117,3 +119,74 @@ def test_inserted_since_refetch_keeps_first_stored_time(store, monkeypatch):
     add_at(store, monkeypatch, DIGEST_8AM - timedelta(hours=1), [make_event("edgar:1")])
     add_at(store, monkeypatch, DIGEST_8AM + timedelta(hours=8), [make_event("edgar:1")])
     assert store.events_inserted_since(DIGEST_8AM) == []
+
+
+# --- add_summary: one checked summary per event ---------------------------------
+
+REVENUE = KeyNumber(
+    number="$57.0 billion",
+    quote="Revenue was $57.0 billion, up 62% from a year ago.",
+    source="EX-99.1",
+)
+
+
+def save(store, event_id="edgar:1", text="Revenue was $57.0 billion.", key_numbers=(REVENUE,),
+         prompt_version=1, input_tokens=28_000, output_tokens=500):
+    store.add_summary(
+        event_id, Summary(summary=text, key_numbers=list(key_numbers)),
+        model="claude-opus-5-5", prompt_version=prompt_version,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+    )
+
+
+def summary_rows(store):
+    # No method reads summaries back yet, so look at the table itself.
+    return store._conn.execute("SELECT * FROM summaries ORDER BY event_id").fetchall()
+
+
+def test_add_summary_saves_every_column_in_its_place(store, monkeypatch):
+    # The clock reads 8am New York; the store saves it as 13:00 UTC, like events.
+    freeze_clock(monkeypatch, datetime(2026, 11, 17, 8, 0, tzinfo=timezone(timedelta(hours=-5))))
+    # Different input and output counts, so swapping them would show.
+    save(store, input_tokens=28_131, output_tokens=496)
+    (row,) = summary_rows(store)
+    assert row[:2] == ("edgar:1", "Revenue was $57.0 billion.")
+    assert row[3:] == ("claude-opus-5-5", 1, 28_131, 496, "2026-11-17T13:00:00+00:00")
+
+
+def test_add_summary_key_numbers_come_back_from_the_json(store):
+    second = KeyNumber(number="1,200", quote="We added 1,200 employees.", source="EX-99.1")
+    save(store, key_numbers=[REVENUE, second])
+    (row,) = summary_rows(store)
+    assert [KeyNumber(**d) for d in json.loads(row[2])] == [REVENUE, second]
+
+
+def test_add_summary_with_no_key_numbers_saves_an_empty_list(store):
+    save(store, text="Routine paperwork; nothing new about the business.", key_numbers=[])
+    (row,) = summary_rows(store)
+    assert row[2] == "[]"  # an empty list, not NULL, so NOT NULL holds
+
+
+def test_add_summary_again_replaces_the_first(store):
+    # Say, the same filing summarized again after a prompt change.
+    save(store, text="First.", key_numbers=[], prompt_version=1)
+    save(store, text="Second.", key_numbers=[], prompt_version=2)
+    (row,) = summary_rows(store)  # one row, not two
+    assert (row[1], row[4]) == ("Second.", 2)
+
+
+def test_add_summary_replace_leaves_other_events_alone(store):
+    save(store, event_id="edgar:1", text="One.", key_numbers=[])
+    save(store, event_id="edgar:2", text="Two.", key_numbers=[])
+    save(store, event_id="edgar:1", text="One again.", key_numbers=[])
+    assert [(r[0], r[1]) for r in summary_rows(store)] == [
+        ("edgar:1", "One again."), ("edgar:2", "Two."),
+    ]
+
+
+def test_add_summary_persists_to_disk(tmp_path):
+    path = tmp_path / "events.db"
+    with Store(path) as s:
+        save(s)
+    with Store(path) as s:
+        assert len(summary_rows(s)) == 1

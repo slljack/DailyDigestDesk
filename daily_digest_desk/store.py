@@ -7,6 +7,7 @@ Public surface:
     store.add_readings(readings)          -> list[Reading]  (only the new ones)
     store.readings_since(series, since)   -> list[Reading]
     store.get_cursor(key) / set_cursor(key, value)
+    store.add_summary(event_id, summary, model=..., prompt_version=..., input_tokens=..., output_tokens=...)
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from daily_digest_desk.models import Event, Reading
+from daily_digest_desk.reasoning.summarize import Summary
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -47,6 +49,17 @@ CREATE TABLE IF NOT EXISTS readings (
 CREATE TABLE IF NOT EXISTS cursors (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    event_id       TEXT PRIMARY KEY,
+    summary        TEXT NOT NULL,
+    key_numbers    TEXT NOT NULL,   -- JSON
+    model          TEXT NOT NULL,
+    prompt_version INTEGER NOT NULL,
+    input_tokens   INTEGER NOT NULL,
+    output_tokens  INTEGER NOT NULL,
+    inserted_at    TEXT NOT NULL
 );
 """
 
@@ -157,4 +170,26 @@ class Store:
                 "INSERT INTO cursors (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
+            )
+
+    def add_summary(
+        self,
+        event_id: str,
+        summary: Summary,
+        *,
+        model: str,
+        prompt_version: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Save a summary that passed its checks. One per event: a second summary
+        for the same event replaces the first (say, after a prompt change)."""
+        key_numbers = json.dumps([kn.model_dump() for kn in summary.key_numbers])
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id, summary.summary, key_numbers, model, prompt_version,
+                    input_tokens, output_tokens, _iso(datetime.now(timezone.utc)),
+                ),
             )
