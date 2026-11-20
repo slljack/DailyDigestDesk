@@ -34,6 +34,11 @@ SUMMARY_FORMS: tuple[str, ...] = (
 MODEL = "claude-opus-5-5"
 EFFORT = "medium"  # how hard the model thinks; a starting guess, to be checked on the eval
 
+# MODEL's price per million tokens. Thinking is billed as output. A fallback
+# model may be priced differently, so dollars() is an estimate: fine for a cap.
+INPUT_DOLLARS_PER_MTOK = 4.00
+OUTPUT_DOLLARS_PER_MTOK = 20.00
+
 # The size check. The prompt aims for about 60 words; this limit only catches a
 # broken answer (rambling, half the filing pasted in), so an accurate summary
 # that runs a little long is never dropped.
@@ -198,6 +203,13 @@ def check_summary(summary: Summary, documents: dict[str, str]) -> list[str]:
         if number not in quoted:
             problems.append(f"summary: {number!r} is not in any quote")
     return problems
+
+
+def dollars(input_tokens: int, output_tokens: int) -> float:
+    """What these tokens cost at MODEL's prices. Example: dollars(28_000, 500) is 0.122."""
+    return (
+        input_tokens * INPUT_DOLLARS_PER_MTOK + output_tokens * OUTPUT_DOLLARS_PER_MTOK
+    ) / 1_000_000
 
 
 def _tokens(usage) -> tuple[int, int]:

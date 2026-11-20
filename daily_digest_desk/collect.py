@@ -49,8 +49,12 @@ from daily_digest_desk import signals
 from daily_digest_desk.holdings import load_holdings
 from daily_digest_desk.ingestion import finnhub, fred
 from daily_digest_desk.ingestion.edgar_events import fetch_edgar_events
+from daily_digest_desk.ingestion.edgar_text import fetch_filing_documents, trim_documents
 from daily_digest_desk.models import Event, Reading
 from daily_digest_desk.output.digest import build_digest
+from daily_digest_desk.reasoning.summarize import (
+    PROMPT_VERSION, SUMMARY_FORMS, SummaryError, SummaryResult, dollars, summarize_checked,
+)
 from daily_digest_desk.store import Store
 
 log = logging.getLogger(__name__)
@@ -59,6 +63,8 @@ Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
 FinnhubFetcher = Callable[[str], dict]
 EarningsFetcher = Callable[[str, date], list[dict]]
 DigestBuilder = Callable[[list[Event], datetime], str]  # (events, now) -> HTML page
+DocumentFetcher = Callable[[str, str], list[tuple[str, str]]]  # (accession, form) -> documents
+Summarizer = Callable[[Event, dict[str, str], object], SummaryResult]  # (event, documents, client)
 
 
 class FredFetcher(Protocol):
@@ -84,6 +90,14 @@ _DIGEST_CURSOR = "digest:last"
 _FIRST_DIGEST_WINDOW = timedelta(days=7)  # what the very first page covers
 
 _NEW_YORK = ZoneInfo("America/New_York")
+
+# Filings older than this don't get a summary: they're no longer news on the page,
+# and a filing that fails every day stops costing money after a week.
+_SUMMARY_WINDOW = timedelta(days=7)
+
+# The most one run spends on summaries (DESIGN.md section 7). A fuse, not a budget:
+# the busiest day so far is about $1 even if every summary needs its retry.
+SUMMARY_CAP_DOLLARS = 2.00
 
 
 def collect_edgar(
@@ -265,6 +279,69 @@ def collect_signals(
             new_events.extend(store.add([event]))
 
     return new_events, errors
+
+
+@dataclass
+class SummaryRun:
+    """What collect_summaries did: for the run's report."""
+
+    saved: list[str]  # event ids that got a summary
+    left: int         # filings not tried because the cap was reached; the next run gets them
+    dollars: float    # estimated spend, failed calls included
+
+
+def collect_summaries(
+    store: Store,
+    client,
+    now: datetime,
+    cap: float = SUMMARY_CAP_DOLLARS,
+    fetch: DocumentFetcher = fetch_filing_documents,
+    summarize: Summarizer = summarize_checked,
+) -> tuple[SummaryRun, dict[str, str]]:
+    """Summarize recent filings that have none yet. Returns (what it did, errors by event id).
+
+    Newest first, until `cap` dollars are spent. The cap is checked before each
+    filing, so the run can go over it by at most one summary. A filing that fails
+    (no text, fetch error, model refused, failed its checks twice) gets no row,
+    so the next run tries it again, until it's older than _SUMMARY_WINDOW.
+    `fetch` and `summarize` are injectable so tests can run with no network.
+    """
+    to_do = store.events_to_summarize(now - _SUMMARY_WINDOW, SUMMARY_FORMS)
+    saved: list[str] = []
+    errors: dict[str, str] = {}
+    spent = 0.0
+    left = 0
+
+    for i, event in enumerate(to_do):
+        if spent >= cap:
+            left = len(to_do) - i
+            break
+        try:
+            documents = trim_documents(fetch(event.fields["accession_number"], event.kind))
+            if not any(documents.values()):
+                # Nothing to read (an exhibit that's only pictures): don't pay to ask.
+                errors[event.id] = "no text in the filing to summarize"
+                continue
+            result = summarize(event, documents, client)
+        except SummaryError as exc:
+            spent += dollars(exc.input_tokens, exc.output_tokens)  # a failed call still costs
+            log.warning("Summary failed for %s: %s", event.id, exc)
+            errors[event.id] = str(exc)
+            continue
+        except Exception as exc:  # noqa: BLE001 — fetch failed, API down: isolate per filing
+            log.warning("Summary failed for %s: %s", event.id, exc)
+            errors[event.id] = str(exc)
+            continue
+
+        spent += dollars(result.input_tokens, result.output_tokens)
+        store.add_summary(
+            event.id, result.summary,
+            model=result.model, prompt_version=PROMPT_VERSION,
+            input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+        )
+        saved.append(event.id)
+
+    return SummaryRun(saved, left, spent), errors
 
 
 def write_digest(

@@ -8,7 +8,7 @@ from daily_digest_desk.reasoning import summarize as summarize_module
 from daily_digest_desk.reasoning.summarize import (
     MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary, SummaryError, SummaryResult,
     _message_text, _normalize, _NUMBER, _retry_note, _tokens, check_summary, summarize,
-    summarize_checked,
+    dollars, summarize_checked,
 )
 
 
@@ -402,3 +402,11 @@ def test_summarize_checked_retry_that_is_refused_counts_both_calls():
     with pytest.raises(SummaryError, match="refused") as error:
         summarize_checked(event(), DOCS, client)
     assert (error.value.input_tokens, error.value.output_tokens) == (300, 16)
+
+
+# --- dollars -------------------------------------------------------------------------
+
+def test_dollars_at_the_models_prices():
+    assert dollars(1_000_000, 0) == pytest.approx(summarize_module.INPUT_DOLLARS_PER_MTOK)
+    assert dollars(0, 1_000_000) == pytest.approx(summarize_module.OUTPUT_DOLLARS_PER_MTOK)
+    assert dollars(28_131, 496) == pytest.approx(0.122444)  # NVDA's live run: $0.12

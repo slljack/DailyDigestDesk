@@ -130,7 +130,7 @@ v1 titles say *that* something happened ("AAOI 8-K: Material agreement"), not *w
 | Storage | A `summaries` table: event id (the key: one summary per event, replaced if redone), summary, key numbers (JSON), model, prompt version, input and output tokens, time. Only summaries that passed the checks are saved. Facts and model output stay apart (section 2) |
 | When | Inside `desk-collect`, after events are stored, before the page. Only filings from the last 7 days without a summary are sent, newest first, so a second run costs almost nothing |
 | Failures | A summary that fails the checks gets one retry, told what was wrong. If that fails too it's dropped and its problems are printed with the run's errors. The page still comes out, without that summary; the next run retries, until the filing is 7 days old |
-| Cost | Roughly $0.10-0.50 a day at today's holdings (5-15 new filings). A $1 cap per run, counting every token including failed calls, keeps a busy day from surprising me |
+| Cost | Roughly $0.10-0.50 a day at today's holdings (5-15 new filings). A $2 cap per run, counting every token including failed calls, keeps a busy day from surprising me (the busiest day so far, 4 filings, is about $1 even if every one needs its retry). A capped filing isn't lost: it waits for the next run |
 | Eval | About 20 real events, hand-checked: correct? anything important missing? anything made up? easy to understand? Rerun after every prompt or model change |
 
 **After v2: themes, news and relevance.** The goal is everything important about my holdings in a day, including news that never names them ("Microsoft cuts data center leases" matters for NBIS and IREN).
