@@ -7,6 +7,7 @@ Public surface:
     store.add_readings(readings)          -> list[Reading]  (only the new ones)
     store.readings_since(series, since)   -> list[Reading]
     store.get_cursor(key) / set_cursor(key, value)
+    store.events_to_summarize(since, kinds) -> list[Event]  (no summary yet, newest first)
     store.add_summary(event_id, summary, model=..., prompt_version=..., input_tokens=..., output_tokens=...)
 """
 
@@ -171,6 +172,22 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    def events_to_summarize(self, since: datetime, kinds: Iterable[str]) -> list[Event]:
+        """Events of these kinds, filed at or after `since`, with no summary yet. Newest first.
+
+        Newest first because the run's cost cap may stop partway: today's filings
+        matter most on the page, and the older ones get their turn next run.
+        """
+        kinds = list(kinds)
+        placeholders = ", ".join("?" * len(kinds))  # one ? per kind: "?, ?, ?"
+        sql = (
+            f"SELECT {_EVENT_COLUMNS} FROM events "
+            f"WHERE occurred_at >= ? AND kind IN ({placeholders}) "
+            "AND NOT EXISTS (SELECT 1 FROM summaries WHERE summaries.event_id = events.id) "
+            "ORDER BY occurred_at DESC, id"
+        )
+        return [_row_to_event(r) for r in self._conn.execute(sql, [_iso(since), *kinds])]
 
     def add_summary(
         self,

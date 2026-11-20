@@ -22,7 +22,7 @@ Status: design agreed 2026-11-02. Decisions below; open questions at the end.
 
 - **Facts come from sources, not the language model.** Every number comes from structured data (EDGAR, FRED, Finnhub). The language model only writes prose about facts it was given, and cites them.
 - **The database is the single source of truth.** The web page is a view of it, rebuilt from it.
-- **Facts never change; opinions can.** Events are stored once and never edited. Anything the language model produces (summaries, thesis labels, scores) is stored separately, with which model and prompt version produced it, so versions can be compared.
+- **Facts never change; opinions can.** Events are stored once and never edited. Anything the language model produces (summaries, thesis labels, scores) is stored separately, with which model and prompt version produced it. The live tables keep one per event (the newest replaces the old one); versions are compared on the eval, where every version runs on the same hand-checked events.
 - **Informs, doesn't advise.** The digest explains what happened and how it relates to my thesis. It does not tell me to buy or sell.
 - **Beginners can't spot errors.** That makes accuracy stricter, not looser: teaching content that doesn't change (explainers, glossary) is written once and reviewed; language-model teaching waits until summaries are checked against sources.
 
@@ -67,7 +67,7 @@ Both need a free API key (signed up by me), stored in `.env`.
 | **Event** | One thing that became public (a filing, a data release, an earnings result), or a signal made **from readings** by a rule | Fetched from sources, or derived by rules | Never |
 | **Holding** | A stock I own, with its weight | Me | Sometimes |
 | **Thesis** | Why I own a holding | Me | Over time |
-| **Judgment** | A language-model output about an event: summary, thesis label, (later) score. Points to its event; records model + prompt version + time | Language model | New versions added, old ones kept |
+| **Judgment** | A language-model output about an event: summary, thesis label, (later) score. Points to its event; records model + prompt version + time | Language model | One per event; replaced when redone (the eval compares versions) |
 | **Weekly review** | Per-holding review of the week's judgments against the thesis | Language model | One per week |
 | **Explainer** | Plain-language page per data type (CPI, 8-K, Form 4…): what it is, why stocks care | Me (language model may help draft), reviewed | Rarely |
 | **Glossary term** | Short hover definition (EPS, yield, 13G…) | Me (language model may help draft), reviewed | Rarely |
@@ -123,14 +123,14 @@ v1 titles say *that* something happened ("AAOI 8-K: Material agreement"), not *w
 | Decision | Choice |
 |---|---|
 | Model | Claude Opus 5.5 (`claude-opus-5-5`), effort tuned on the eval. Cheaper models are tried only when the eval shows they do as well |
-| What gets a summary | Free-text filings: 8-K / 6-K, 10-Q / 10-K, 13D, S-3 / 424B. Not big moves, FRED releases or earnings results (already clear sentences). Form 4 is structured data, so code describes it, not the model |
+| What gets a summary | Free-text filings: 8-K / 6-K, 13D, S-3 / 424B; 10-Q / 10-K once their management discussion section can be found. Not 13G (a passive stake), big moves, FRED releases or earnings results (already clear sentences). Form 4 is structured data, so code describes it, not the model |
 | What the model reads | The right part, not the whole filing: an 8-K's own text plus its press release (Exhibit 99.1) if it has one; a 10-Q / 10-K's management discussion section |
 | What comes back | A fixed format: `summary` (2-3 plain-English sentences for a beginner) and `key_numbers`, each with the exact sentence from the filing it came from |
 | Checking | Code checks every quote appears word for word in the filing and every number appears in its quote. A summary that fails is not shown |
-| Storage | A `summaries` table: event id, summary, key numbers, model, prompt version, time. Facts and model output stay apart (section 2) |
-| When | Inside `desk-collect`, after events are stored, before the page. Only events without a summary are sent, so a second run costs almost nothing |
-| Failures | The page still comes out, without that summary; the next run retries |
-| Cost | Roughly $0.10-0.50 a day at today's holdings (5-15 new filings). A daily cap keeps a busy day from surprising me |
+| Storage | A `summaries` table: event id (the key: one summary per event, replaced if redone), summary, key numbers (JSON), model, prompt version, input and output tokens, time. Only summaries that passed the checks are saved. Facts and model output stay apart (section 2) |
+| When | Inside `desk-collect`, after events are stored, before the page. Only filings from the last 7 days without a summary are sent, newest first, so a second run costs almost nothing |
+| Failures | A summary that fails the checks gets one retry, told what was wrong. If that fails too it's dropped and its problems are printed with the run's errors. The page still comes out, without that summary; the next run retries, until the filing is 7 days old |
+| Cost | Roughly $0.10-0.50 a day at today's holdings (5-15 new filings). A $1 cap per run, counting every token including failed calls, keeps a busy day from surprising me |
 | Eval | About 20 real events, hand-checked: correct? anything important missing? anything made up? easy to understand? Rerun after every prompt or model change |
 
 **After v2: themes, news and relevance.** The goal is everything important about my holdings in a day, including news that never names them ("Microsoft cuts data center leases" matters for NBIS and IREN).

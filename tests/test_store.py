@@ -190,3 +190,69 @@ def test_add_summary_persists_to_disk(tmp_path):
         save(s)
     with Store(path) as s:
         assert len(summary_rows(s)) == 1
+
+
+# --- events_to_summarize: filings that still need a summary --------------------------
+
+WEEK_AGO = datetime(2026, 10, 3, 20, 0, tzinfo=timezone.utc)  # make_event's day=3
+
+
+def to_summarize(store, kinds=("8-K", "6-K")):
+    return [e.id for e in store.events_to_summarize(WEEK_AGO, kinds)]
+
+
+def test_events_to_summarize_finds_a_recent_filing_with_no_summary(store):
+    store.add([make_event("edgar:1", day=5)])
+    assert to_summarize(store) == ["edgar:1"]
+
+
+def test_events_to_summarize_skips_one_already_summarized(store):
+    store.add([make_event("edgar:done", day=5), make_event("edgar:todo", day=6)])
+    save(store, event_id="edgar:done")
+    assert to_summarize(store) == ["edgar:todo"]
+
+
+def test_events_to_summarize_only_the_kinds_asked_for(store):
+    store.add([
+        make_event("edgar:8k", day=5, kind="8-K"),
+        make_event("edgar:6k", day=6, kind="6-K"),  # the second kind: each ? gets its value
+        make_event("edgar:form4", day=7, kind="4"),
+        make_event("signal:move", day=8, kind="big_move", source="signal"),
+    ])
+    assert to_summarize(store) == ["edgar:6k", "edgar:8k"]
+
+
+def test_events_to_summarize_since_is_inclusive_and_older_ones_are_left_out(store):
+    store.add([
+        make_event("edgar:old", day=2),
+        make_event("edgar:exactly", day=3),  # filed at exactly `since`: still in
+    ])
+    assert to_summarize(store) == ["edgar:exactly"]
+
+
+def test_events_to_summarize_newest_first_then_by_id(store):
+    store.add([
+        make_event("edgar:b", day=5), make_event("edgar:a", day=5),  # same time: id decides
+        make_event("edgar:newest", day=9), make_event("edgar:oldest", day=4),
+    ])
+    assert to_summarize(store) == ["edgar:newest", "edgar:a", "edgar:b", "edgar:oldest"]
+
+
+def test_events_to_summarize_converts_since_to_utc(store):
+    store.add([make_event("edgar:1", day=3)])  # 20:00 UTC on Oct 3
+    new_york = timezone(timedelta(hours=-4))  # EDT in early October
+    # 5pm New York is 21:00 UTC, after the filing. Compared as raw text,
+    # "17:00-04:00" would sort before "20:00+00:00" and wrongly include it.
+    assert store.events_to_summarize(datetime(2026, 10, 3, 17, 0, tzinfo=new_york), ["8-K"]) == []
+    assert len(store.events_to_summarize(datetime(2026, 10, 3, 15, 0, tzinfo=new_york), ["8-K"])) == 1
+
+
+def test_events_to_summarize_with_no_kinds_finds_nothing(store):
+    store.add([make_event("edgar:1", day=5)])
+    assert to_summarize(store, kinds=[]) == []
+
+
+def test_events_to_summarize_round_trips_the_event(store):
+    event = make_event("edgar:1", day=5, fields={"items": ["2.02"]})
+    store.add([event])
+    assert store.events_to_summarize(WEEK_AGO, ["8-K"]) == [event]

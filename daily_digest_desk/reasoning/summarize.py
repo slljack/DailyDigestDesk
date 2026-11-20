@@ -13,9 +13,23 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from daily_digest_desk.forms import PROSPECTUS_FORMS, SCHEDULE_13D_FORMS
 from daily_digest_desk.models import Event
 
 _NEW_YORK = ZoneInfo("America/New_York")
+
+# The filings that get a summary: free text a beginner can't easily read
+# (DESIGN.md section 7). Not Form 4 (structured numbers code can describe),
+# 13G (a passive stake, nothing to explain), or 10-Q/10-K yet (they need their
+# MD&A section found first). Signals, FRED and earnings events are already
+# clear sentences.
+SUMMARY_FORMS: tuple[str, ...] = (
+    "8-K", "8-K/A",
+    "6-K", "6-K/A",
+    *SCHEDULE_13D_FORMS,
+    "S-3", "S-3ASR",
+    *PROSPECTUS_FORMS,
+)
 
 MODEL = "claude-opus-5-5"
 EFFORT = "medium"  # how hard the model thinks; a starting guess, to be checked on the eval
