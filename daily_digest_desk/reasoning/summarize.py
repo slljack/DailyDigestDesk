@@ -8,6 +8,7 @@ filing, so a made-up number can't reach the page.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -73,6 +74,20 @@ class Summary(BaseModel):
 
     summary: str                  # 2-3 plain-English sentences
     key_numbers: list[KeyNumber]  # up to 5; empty for a routine filing with no numbers
+
+
+@dataclass
+class SummaryResult:
+    """A Summary, plus which model wrote it and what it cost, for the summaries table.
+
+    Not a pydantic model like Summary: the API never sees this shape, so it needs
+    no schema. It's a plain box for four values.
+    """
+
+    summary: Summary
+    model: str          # response.model: the fallback model's name if it answered instead
+    input_tokens: int
+    output_tokens: int  # thinking included: it's billed as output
 
 
 # A number as written in text: 62, 57.0, 1,200, 1,234.56. Not one glued to letters
@@ -161,8 +176,8 @@ def check_summary(summary: Summary, documents: dict[str, str]) -> list[str]:
     return problems
 
 
-def summarize(event: Event, documents: dict[str, str], client) -> Summary:
-    """Ask Claude for a Summary of one event's filing.
+def summarize(event: Event, documents: dict[str, str], client) -> SummaryResult:
+    """Ask Claude for a Summary of one event's filing, with the model and token counts.
 
     `documents` is trim_documents' output. `client` is an anthropic.Anthropic();
     it's passed in so tests can hand in a fake one and never call the real API.
@@ -190,4 +205,9 @@ def summarize(event: Event, documents: dict[str, str], client) -> Summary:
         raise SummaryError(f"Answer was cut off for {event.id}")
     if response.parsed_output is None:
         raise SummaryError(f"No summary in the answer for {event.id} ({response.stop_reason})")
-    return response.parsed_output
+    return SummaryResult(
+        summary=response.parsed_output,
+        model=response.model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+    )

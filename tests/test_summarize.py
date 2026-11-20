@@ -6,7 +6,7 @@ import pytest
 from daily_digest_desk.models import Event
 from daily_digest_desk.reasoning import summarize as summarize_module
 from daily_digest_desk.reasoning.summarize import (
-    MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary, SummaryError,
+    MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary, SummaryError, SummaryResult,
     _message_text, _normalize, _NUMBER, check_summary, summarize,
 )
 
@@ -249,13 +249,26 @@ class FakeClient:
         return self.response
 
 
-def answer(stop_reason="end_turn", parsed_output=None):
-    return SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed_output)
+def answer(stop_reason="end_turn", parsed_output=None, model="claude-opus-5-5",
+           input_tokens=28_131, output_tokens=496):
+    return SimpleNamespace(
+        stop_reason=stop_reason, parsed_output=parsed_output, model=model,
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
 
 
-def test_summarize_returns_the_models_summary():
-    client = FakeClient(answer(parsed_output=summary()))
-    assert summarize(event(), DOCS, client) == summary()
+def test_summarize_returns_the_summary_model_and_token_counts():
+    # Different input and output counts, so swapping them would show.
+    client = FakeClient(answer(parsed_output=summary(), input_tokens=28_131, output_tokens=496))
+    assert summarize(event(), DOCS, client) == SummaryResult(
+        summary=summary(), model="claude-opus-5-5", input_tokens=28_131, output_tokens=496,
+    )
+
+
+def test_summarize_records_the_model_that_answered_not_the_one_asked():
+    # If the first model declined, the fallback model answered: save its name.
+    client = FakeClient(answer(parsed_output=summary(), model="claude-fallback-model"))
+    assert summarize(event(), DOCS, client).model == "claude-fallback-model"
 
 
 def test_summarize_sends_the_prompt_the_filing_and_the_shape():
