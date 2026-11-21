@@ -47,7 +47,7 @@ MAX_KEY_NUMBERS = 5
 
 # Bump the version whenever the prompt changes, so each saved summary records
 # which prompt wrote it.
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 SYSTEM_PROMPT = """\
 You summarize SEC filings for a beginner investor who owns this stock.
 They read your summary instead of the filing, so accuracy matters more than style.
@@ -57,9 +57,13 @@ filing actually reports: what happened, with the numbers that matter. If a
 finance term is unavoidable, explain it in a few words the first time.
 
 Use only the documents given. If something isn't in them, leave it out;
-don't add background you know from elsewhere. Every quote you give is
-checked by code against the filing, and a summary with a quote that isn't
-found word for word is thrown away. So for each important number (up to 5),
+don't add background you know from elsewhere. That includes people and
+firms: give only the role the filing states ("a director", "the chief
+financial officer"). If it states none, use just the name; don't add a
+title, or a judgment of how important someone is, from what you know.
+
+Every quote you give is checked by code against the filing, and a summary
+with a quote that isn't found word for word is thrown away. So for each important number (up to 5),
 copy the exact sentence it appears in, without changing a character, and
 give the type of the document it's in. Every number in your summary, dates
 included, must appear in one of those quotes. Describe a reporting period in
