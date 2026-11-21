@@ -9,6 +9,7 @@ Public surface:
     store.get_cursor(key) / set_cursor(key, value)
     store.events_to_summarize(since, kinds) -> list[Event]  (no summary yet, newest first)
     store.add_summary(event_id, summary, model=..., prompt_version=..., input_tokens=..., output_tokens=...)
+    store.summaries_for(event_ids)        -> dict[str, Summary]  (event id -> its summary)
 """
 
 from __future__ import annotations
@@ -210,3 +211,20 @@ class Store:
                     input_tokens, output_tokens, _iso(datetime.now(timezone.utc)),
                 ),
             )
+
+    def summaries_for(self, event_ids: Iterable[str]) -> dict[str, Summary]:
+        """The saved summaries of these events, keyed by event id, for the page.
+
+        An event with no summary is simply missing from the dict, so the page
+        can ask summaries.get(event.id) and get None.
+        """
+        event_ids = list(event_ids)
+        placeholders = ", ".join("?" * len(event_ids))
+        sql = (
+            "SELECT event_id, summary, key_numbers FROM summaries "
+            f"WHERE event_id IN ({placeholders})"
+        )
+        return {
+            event_id: Summary(summary=text, key_numbers=json.loads(key_numbers))
+            for event_id, text, key_numbers in self._conn.execute(sql, event_ids)
+        }

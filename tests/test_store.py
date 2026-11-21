@@ -140,7 +140,8 @@ def save(store, event_id="edgar:1", text="Revenue was $57.0 billion.", key_numbe
 
 
 def summary_rows(store):
-    # No method reads summaries back yet, so look at the table itself.
+    # summaries_for gives back only what the page needs, so to see every column,
+    # look at the table itself.
     return store._conn.execute("SELECT * FROM summaries ORDER BY event_id").fetchall()
 
 
@@ -256,3 +257,60 @@ def test_events_to_summarize_round_trips_the_event(store):
     event = make_event("edgar:1", day=5, fields={"items": ["2.02"]})
     store.add([event])
     assert store.events_to_summarize(WEEK_AGO, ["8-K"]) == [event]
+
+
+# --- summaries_for: the page's summaries, keyed by event id ---------------------
+
+def test_summaries_for_gives_back_the_summary_as_saved(store):
+    second = KeyNumber(number="1,200", quote="We added 1,200 employees.", source="EX-99.1")
+    save(store, event_id="edgar:1", key_numbers=[REVENUE, second])
+    # Equal to a fresh Summary: the JSON came back as KeyNumbers, in their order.
+    assert store.summaries_for(["edgar:1"]) == {
+        "edgar:1": Summary(summary="Revenue was $57.0 billion.", key_numbers=[REVENUE, second]),
+    }
+
+
+def test_summaries_for_each_id_gets_its_own_summary(store):
+    save(store, event_id="edgar:1", text="One.", key_numbers=[])
+    save(store, event_id="edgar:2", text="Two.", key_numbers=[])  # the second ? gets its id too
+    got = store.summaries_for(["edgar:1", "edgar:2"])
+    assert {event_id: s.summary for event_id, s in got.items()} == {"edgar:1": "One.", "edgar:2": "Two."}
+
+
+def test_summaries_for_leaves_out_ids_with_no_summary(store):
+    # A Form 4 or a big move never gets a summary: missing from the dict, so .get() gives None.
+    save(store, event_id="edgar:1")
+    got = store.summaries_for(["edgar:1", "edgar:form4"])
+    assert list(got) == ["edgar:1"]
+    assert got.get("edgar:form4") is None
+
+
+def test_summaries_for_only_the_ids_asked_for(store):
+    save(store, event_id="edgar:on-page", text="On the page.", key_numbers=[])
+    save(store, event_id="edgar:older", text="On an earlier page.", key_numbers=[])
+    assert list(store.summaries_for(["edgar:on-page"])) == ["edgar:on-page"]
+
+
+def test_summaries_for_with_no_ids_finds_nothing(store):
+    save(store)  # the table isn't empty; the question is
+    assert store.summaries_for([]) == {}
+
+
+def test_summaries_for_gives_the_newest_after_a_replace(store):
+    save(store, text="First.", key_numbers=[], prompt_version=1)
+    save(store, text="Second.", key_numbers=[], prompt_version=2)
+    assert store.summaries_for(["edgar:1"])["edgar:1"].summary == "Second."
+
+
+def test_summaries_for_with_no_key_numbers_gives_an_empty_list(store):
+    save(store, text="Routine paperwork; nothing new about the business.", key_numbers=[])
+    assert store.summaries_for(["edgar:1"])["edgar:1"].key_numbers == []
+
+
+def test_summaries_for_accepts_ids_that_can_be_read_only_once(store):
+    # The page may pass a generator, (e.id for e in events). The ids are used
+    # twice (to count the ?s, then to fill them), and a generator is empty the
+    # second time.
+    save(store, event_id="edgar:1")
+    events = [make_event("edgar:1")]
+    assert list(store.summaries_for(e.id for e in events)) == ["edgar:1"]
