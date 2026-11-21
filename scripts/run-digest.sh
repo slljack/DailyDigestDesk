@@ -24,7 +24,7 @@ status=$?
 
 # API keys can show up in error messages (a failed request's url), and the log
 # is a plain file: redact them before writing.
-redacted=$(sed -E 's/(token|api_key)=[^&" ]+/\1=REDACTED/g' <<< "$output")
+redacted=$(sed -E 's/(token|api_key)=[^&" ]+/\1=REDACTED/g; s/sk-ant-[A-Za-z0-9_-]+/REDACTED/g' <<< "$output")
 {
     echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z')  exit $status"
     echo "$redacted"

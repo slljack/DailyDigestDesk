@@ -21,6 +21,11 @@ Signal rules run last, on the readings this run added: a big move from the
 previous reading becomes an Event. Only readings from the past week are checked,
 so a first run's backfill doesn't report old moves as news.
 
+Then filings from the past week with no summary yet (8-K, 6-K, 13D, S-3, 424B)
+get a plain-English summary from Claude, checked against the filing, newest
+first, up to SUMMARY_CAP_DOLLARS a run. Skipped if ANTHROPIC_API_KEY isn't set.
+A filing that fails is tried again next run.
+
 Each run ends by writing a digest page, data/digests/<New York date-time>.html,
 with every event stored since the last page (the `digest:last` cursor; the first
 page covers the past week). Open it in a browser.
@@ -43,6 +48,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+import anthropic
 from dotenv import load_dotenv
 
 from daily_digest_desk import signals
@@ -65,6 +71,8 @@ EarningsFetcher = Callable[[str, date], list[dict]]
 DigestBuilder = Callable[[list[Event], datetime], str]  # (events, now) -> HTML page
 DocumentFetcher = Callable[[str, str], list[tuple[str, str]]]  # (accession, form) -> documents
 Summarizer = Callable[[Event, dict[str, str], object], SummaryResult]  # (event, documents, client)
+# collect_summaries with the client filled in: called as (store, now=...).
+SummaryCollector = Callable[..., "tuple[SummaryRun, dict[str, str]]"]
 
 
 class FredFetcher(Protocol):
@@ -394,6 +402,7 @@ class Sources:
     fred: FredFetcher | None = None
     quote: FinnhubFetcher | None = None
     earnings: EarningsFetcher | None = None
+    summaries: SummaryCollector | None = None
 
 
 @dataclass
@@ -405,6 +414,7 @@ class RunResult:
     signal_events: list[Event]
     digest_path: Path | None  # None if the page failed
     errors: dict[str, dict[str, str]]  # source -> {ticker, series or "page": message}
+    summaries: SummaryRun | None = None  # None if skipped (no key) or it failed
 
 
 def run(
@@ -453,6 +463,17 @@ def run(
     )
     new += signal_events
 
+    # After the collectors, so today's filings are in the store, and before the
+    # page, so it can show them. A crash here (the store, not one filing: those
+    # are caught inside) is an error, and the page still comes out.
+    summary_run: SummaryRun | None = None
+    if sources.summaries:
+        try:
+            summary_run, errors["summaries"] = sources.summaries(store, now=clock())
+        except Exception as exc:  # noqa: BLE001 — the page must still be written
+            log.warning("Summaries failed: %s", exc)
+            errors["summaries"] = {"run": str(exc)}
+
     # Last, so the page has everything this run stored. A failed page leaves the
     # digest cursor alone, so the next run's page shows the same events again.
     digest_path: Path | None = None
@@ -466,6 +487,7 @@ def run(
 
     return RunResult(
         new, fred_readings, quote_readings, earnings_events, signal_events, digest_path, errors,
+        summary_run,
     )
 
 
@@ -485,6 +507,13 @@ def report_lines(result: RunResult, sources: Sources) -> list[str]:
     else:
         lines.append("# Finnhub skipped: set FINNHUB_API_KEY in .env")
     lines.append(f"# {len(result.signal_events)} new signal event(s), included above")
+    if not sources.summaries:
+        lines.append("# Summaries skipped: set ANTHROPIC_API_KEY in .env")
+    elif result.summaries:  # None if the step itself failed: its error is listed below
+        s = result.summaries
+        lines.append(f"# {len(s.saved)} new summary(ies), about ${s.dollars:.2f}")
+        if s.left:
+            lines.append(f"# Summary cap reached: {s.left} filing(s) left for the next run")
     if result.digest_path:
         lines.append(f"# Digest page: {result.digest_path.resolve()}")
     for source, source_errors in result.errors.items():
@@ -515,11 +544,16 @@ def main() -> None:
     tickers = [h.ticker for h in load_holdings(args.holdings)]
     fred_key = os.environ.get("FRED_API_KEY")
     finnhub_key = os.environ.get("FINNHUB_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     sources = Sources(
         fred=functools.partial(fred.fetch_observations, api_key=fred_key) if fred_key else None,
         quote=functools.partial(finnhub.fetch_quote, api_key=finnhub_key) if finnhub_key else None,
         earnings=(
             functools.partial(finnhub.fetch_earnings, api_key=finnhub_key) if finnhub_key else None
+        ),
+        summaries=(
+            functools.partial(collect_summaries, client=anthropic.Anthropic(api_key=anthropic_key))
+            if anthropic_key else None
         ),
     )
     # One date for every collector, even if the run crosses midnight.

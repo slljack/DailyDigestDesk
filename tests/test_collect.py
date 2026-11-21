@@ -4,8 +4,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from daily_digest_desk.collect import (
-    SUMMARY_CAP_DOLLARS, RunResult, Sources, collect_edgar, collect_summaries, new_york_today,
-    report_lines, run, write_digest,
+    SUMMARY_CAP_DOLLARS, RunResult, Sources, SummaryRun, collect_edgar, collect_summaries,
+    new_york_today, report_lines, run, write_digest,
 )
 from daily_digest_desk.ingestion.edgar_text import MAX_CHARS
 from daily_digest_desk.models import Reading
@@ -245,9 +245,84 @@ def test_report_lists_events_counts_page_and_errors(tmp_path):
         "# FRED skipped: set FRED_API_KEY in .env",
         "# Finnhub skipped: set FINNHUB_API_KEY in .env",
         "# 0 new signal event(s), included above",
+        "# Summaries skipped: set ANTHROPIC_API_KEY in .env",
         f"# Digest page: {(tmp_path / 'page.html').resolve()}",
         "# ERROR signals fred:DGS10 2026-11-17: boom",
     ]
+
+
+# --- summaries inside a run ----------------------------------------------------------
+
+class FakeSummaries:
+    """Stands in for collect_summaries with the client filled in. Records the time
+    it was given and whether a page had already been written when it ran."""
+
+    def __init__(self, digest_dir=None, summary_run=None, errors=None, fails=None):
+        self.digest_dir, self.summary_run = digest_dir, summary_run or SummaryRun(["edgar:1"], 0, 0.12)
+        self.errors, self.fails, self.calls = errors or {}, fails, []
+
+    def __call__(self, store, now):
+        page_written = bool(self.digest_dir and any(self.digest_dir.glob("*.html")))
+        self.calls.append((now, page_written))
+        if self.fails:
+            raise self.fails
+        return self.summary_run, self.errors
+
+
+def test_run_summarizes_before_writing_the_page(store, tmp_path):
+    summaries = FakeSummaries(tmp_path)
+    sources = Sources(edgar=FakeFetcher({}), summaries=summaries)
+    result = run(store, ["AAPL"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    assert summaries.calls == [(AFTER_CLOSE, False)]  # this run's time; no page yet
+    assert result.summaries == summaries.summary_run
+    assert result.errors["summaries"] == {}
+    assert result.digest_path is not None
+
+
+def test_run_summary_errors_are_the_runs_errors(store, tmp_path):
+    summaries = FakeSummaries(errors={"edgar:1": "failed its checks twice"})
+    result = run(store, ["AAPL"], TODAY, Sources(edgar=FakeFetcher({}), summaries=summaries), tmp_path)
+    assert result.errors["summaries"] == {"edgar:1": "failed its checks twice"}
+
+
+def test_run_summaries_crashing_still_writes_the_page(store, tmp_path):
+    summaries = FakeSummaries(fails=RuntimeError("database is locked"))
+    result = run(store, ["AAPL"], TODAY, Sources(edgar=FakeFetcher({}), summaries=summaries), tmp_path)
+    assert result.errors["summaries"] == {"run": "database is locked"}
+    assert result.summaries is None
+    assert result.digest_path is not None
+
+
+def test_run_without_a_summary_source_skips_summaries(store, tmp_path):
+    result = run(store, ["AAPL"], TODAY, Sources(edgar=FakeFetcher({})), tmp_path)
+    assert "summaries" not in result.errors and result.summaries is None
+
+
+def report_with(summary_run, errors=None):
+    result = RunResult(
+        new=[], fred_readings=[], quote_readings=[], earnings_events=[], signal_events=[],
+        digest_path=None, errors=errors or {}, summaries=summary_run,
+    )
+    return report_lines(result, Sources(edgar=FakeFetcher({}), summaries=FakeSummaries()))
+
+
+def test_report_counts_summaries_and_their_cost():
+    lines = report_with(SummaryRun(["edgar:1", "edgar:2", "edgar:3"], 0, 0.364))
+    assert "# 3 new summary(ies), about $0.36" in lines
+    assert not any("cap reached" in line for line in lines)
+
+
+def test_report_says_when_the_cap_left_filings_for_the_next_run():
+    lines = report_with(SummaryRun(["edgar:1"], 2, 2.05))
+    assert "# 1 new summary(ies), about $2.05" in lines
+    assert "# Summary cap reached: 2 filing(s) left for the next run" in lines
+
+
+def test_report_after_summaries_crashed_shows_only_the_error():
+    lines = report_with(None, errors={"summaries": {"run": "database is locked"}})
+    assert not any("summary(ies)" in line for line in lines)
+    assert "# Summaries skipped: set ANTHROPIC_API_KEY in .env" not in lines  # it wasn't skipped
+    assert "# ERROR summaries run: database is locked" in lines
 
 
 # --- collect_summaries ---------------------------------------------------------------
