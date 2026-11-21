@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  launchd job: run desk-collect on weekdays before the market opens and after it closes.
+  launchd job: check every 15 minutes whether a desk-collect run is due, and run it if so.
   Don't load this file directly: scripts/install-schedule.sh fills in the __PLACEHOLDERS__
   for this Mac and installs the result in ~/Library/LaunchAgents/.
 
-  Times are this Mac's local time. The installer converts 8:00am and 5:00pm New York
-  (e.g. 6:00 and 15:00 in Denver). If the Mac is asleep at that time, launchd runs the
-  job when it wakes up.
+  Runs are due at 8:00am and 5:00pm New York on weekdays, but desk-collect decides
+  that itself (its if-due flag; daily_digest_desk/schedule.py), not launchd. launchd's
+  calendar times (StartCalendarInterval) skipped runs the Mac slept through, so instead
+  it asks often, and a missed slot runs at the next check the Mac is awake for.
 -->
 <plist version="1.0">
 <dict>
@@ -17,6 +18,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>__PROJECT_DIR__/scripts/run-digest.sh</string>
+        <string>--if-due</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -25,20 +27,21 @@
         <string>__DESK_COLLECT__</string>
     </dict>
 
-    <!-- Weekday 1 = Monday ... 5 = Friday. Weekend news lands on Monday's morning page. -->
-    <key>StartCalendarInterval</key>
-    <array>
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>__MORNING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>__MORNING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>__MORNING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>__MORNING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>__MORNING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>__EVENING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>__EVENING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>__EVENING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>__EVENING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>__EVENING_HOUR__</integer><key>Minute</key><integer>0</integer></dict>
-    </array>
+    <!-- Every 15 minutes (900 seconds). Almost every check finds nothing due and
+         stops in about a second, with no log entry or pop-up (run-digest.sh). -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Check once when the job loads too (installing it, or logging in), not only
+         15 minutes later. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- run-digest.sh shows its pop-up in the background and ends without waiting
+         for a click. By default launchd closes everything a job started when the
+         job ends, which would close the pop-up too; this leaves it open. -->
+    <key>AbandonProcessGroup</key>
+    <true/>
 
     <!-- run-digest.sh logs desk-collect itself; this catches the script's own errors. -->
     <key>StandardOutPath</key>

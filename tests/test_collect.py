@@ -4,14 +4,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from daily_digest_desk import collect
 from daily_digest_desk.collect import (
-    SUMMARY_CAP_DOLLARS, RunResult, Sources, SummaryRun, collect_edgar, collect_summaries,
-    new_york_today, report_lines, run, write_digest,
+    NOT_DUE, SUMMARY_CAP_DOLLARS, RunResult, Sources, SummaryRun, collect_edgar, collect_summaries,
+    new_york_today, report_lines, run, run_is_due, write_digest,
 )
 from daily_digest_desk.ingestion.edgar_text import MAX_CHARS
 from daily_digest_desk.models import Reading
 from daily_digest_desk.output.digest import build_digest
 from daily_digest_desk.reasoning.summarize import PROMPT_VERSION, Summary, SummaryError, SummaryResult
+from daily_digest_desk.store import Store
 from conftest import add_at, make_event
 
 
@@ -183,6 +185,73 @@ def test_the_real_page_builder_shows_a_summary(store, monkeypatch, tmp_path):
     path = write_digest(store, MORNING, tmp_path, build)
 
     assert '<span class="ai-tag">AI summary</span> Revenue was $57.0 billion.' in path.read_text(encoding="utf-8")
+
+
+
+# --- run_is_due and --if-due: run only when a slot hasn't been covered ----------
+
+def test_run_is_due_before_the_first_page(store):
+    assert run_is_due(store, MORNING)
+
+
+def test_run_is_not_due_right_after_a_page_and_due_at_the_next_slot(store, tmp_path):
+    write_digest(store, MORNING, tmp_path, FakeBuilder())  # the cursor, as a real run sets it
+    assert not run_is_due(store, MORNING + timedelta(hours=1))
+    assert not run_is_due(store, datetime(2026, 11, 17, 16, 59, tzinfo=NEW_YORK))
+    assert run_is_due(store, datetime(2026, 11, 17, 17, 0, tzinfo=NEW_YORK))
+
+
+def test_run_is_due_after_a_skipped_slot(store, tmp_path):
+    # The Nov 19 case: the morning page, then the 5pm run never happened.
+    write_digest(store, MORNING, tmp_path, FakeBuilder())
+    assert run_is_due(store, datetime(2026, 11, 17, 18, 24, tzinfo=NEW_YORK))
+
+
+class Reached(Exception):
+    """Raised by the fake run(), to show main() got past the --if-due check."""
+
+
+def run_main(monkeypatch, tmp_path, now, *args):
+    """main() with a test database, a fixed clock, no .env, and run() replaced."""
+    holdings = tmp_path / "holdings.toml"
+    holdings.write_text('[[position]]\nticker = "AAPL"\n')
+    monkeypatch.setattr(collect, "load_dotenv", lambda: None)
+    for key in ("FRED_API_KEY", "FINNHUB_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(collect, "_utc_now", lambda: now)
+
+    def fake_run(*a, **kw):
+        raise Reached
+    monkeypatch.setattr(collect, "run", fake_run)
+    monkeypatch.setattr("sys.argv", [
+        "desk-collect", "--db", str(tmp_path / "events.db"), "--holdings", str(holdings),
+        "--digest-dir", str(tmp_path / "digests"), *args,
+    ])
+    collect.main()
+
+
+def page_built_at(tmp_path, when):
+    with Store(tmp_path / "events.db") as s:
+        write_digest(s, when, tmp_path / "digests", FakeBuilder())
+
+
+def test_if_due_stops_when_not_due(monkeypatch, tmp_path, capsys):
+    page_built_at(tmp_path, MORNING)
+    run_main(monkeypatch, tmp_path, MORNING + timedelta(hours=1), "--if-due")  # no Reached
+    assert capsys.readouterr().out.startswith(NOT_DUE)
+
+
+def test_if_due_runs_when_due(monkeypatch, tmp_path, capsys):
+    page_built_at(tmp_path, MORNING)
+    with pytest.raises(Reached):
+        run_main(monkeypatch, tmp_path, EVENING, "--if-due")
+    assert NOT_DUE not in capsys.readouterr().out
+
+
+def test_without_if_due_it_always_runs(monkeypatch, tmp_path):
+    page_built_at(tmp_path, MORNING)
+    with pytest.raises(Reached):
+        run_main(monkeypatch, tmp_path, MORNING + timedelta(hours=1))  # by hand: not due, runs anyway
 
 
 # --- run: one whole desk-collect run, with fake sources -----------------------------

@@ -2,6 +2,7 @@
 
     desk-collect                                  # holdings.toml -> data/events.db
     desk-collect --holdings my.toml --lookback-days 30
+    desk-collect --if-due                         # only if a run is due (the scheduler)
 
 Each ticker has its own cursor (`edgar:<TICKER>`), the last date it was
 fetched through. The next run re-fetches from that date inclusive; the overlap
@@ -61,6 +62,7 @@ from daily_digest_desk.output.digest import build_digest
 from daily_digest_desk.reasoning.summarize import (
     PROMPT_VERSION, SUMMARY_FORMS, SummaryError, SummaryResult, dollars, summarize_checked,
 )
+from daily_digest_desk.schedule import is_due
 from daily_digest_desk.store import Store
 
 log = logging.getLogger(__name__)
@@ -388,6 +390,20 @@ def write_digest(
     return path
 
 
+# The first words desk-collect --if-due prints when it skips. run-digest.sh
+# looks for them, so it can stop without a log entry or a pop-up.
+NOT_DUE = "# Not due"
+
+
+def run_is_due(store: Store, now: datetime) -> bool:
+    """True when no page has been built since the latest 8am or 5pm New York slot.
+
+    The last page's time is the digest cursor that write_digest sets.
+    """
+    cursor = store.get_cursor(_DIGEST_CURSOR)
+    return is_due(datetime.fromisoformat(cursor) if cursor else None, now)
+
+
 def new_york_today(now: datetime) -> date:
     """The date in New York, whatever the Mac's time zone. Filings, prices and
     earnings are all dated in New York, so a 10pm run in Denver isn't a day behind."""
@@ -543,7 +559,20 @@ def main() -> None:
         "--digest-dir", default="data/digests",
         help="Where each run's digest page is written (default: data/digests).",
     )
+    parser.add_argument(
+        "--if-due", action="store_true",
+        help="Run only if no page was built since the latest 8am or 5pm New York "
+             "weekday slot; otherwise print '# Not due' and stop. For the scheduler.",
+    )
     args = parser.parse_args()
+
+    # Checked first, before reading holdings or making clients: the scheduler
+    # asks every 15 minutes, and almost every time the answer is no.
+    if args.if_due:
+        with Store(args.db) as store:
+            if not run_is_due(store, _utc_now()):
+                print(f"{NOT_DUE}: a page was already built after the latest slot")
+                return
 
     tickers = [h.ticker for h in load_holdings(args.holdings)]
     fred_key = os.environ.get("FRED_API_KEY")

@@ -133,14 +133,14 @@ Run `desk-collect` automatically on weekdays at 8:00am and 5:00pm New York time 
 
 ```bash
 scripts/install-schedule.sh ~/miniconda3/envs/daily-digest-desk/bin/desk-collect
-launchctl kickstart gui/$(id -u)/com.dailydigestdesk.collect     # run once now to test
+scripts/run-digest.sh      # run once now to test, due or not
 ```
 
-- **launchd, not cron.** If the Mac is asleep at the scheduled time, launchd runs the job when it wakes; cron would skip it. A Mac that's shut down skips the run, but nothing is lost: the next page shows everything since the last one.
+- **A check every 15 minutes, not two fixed times.** launchd starts `run-digest.sh --if-due` every 15 minutes, and `desk-collect --if-due` runs only when no page has been built since the latest 8:00am or 5:00pm New York slot ([schedule.py](daily_digest_desk/schedule.py)); otherwise it prints `# Not due` and the script stops with no log entry and no pop-up. At first the job had launchd's own calendar times, but those skipped the 5pm runs on Nov 19 and 20, 2026 while the Mac was asleep, and never made them up. Now a missed slot runs at the first check the Mac is awake for. A run late in the day can come during market hours, when no prices are stored (see Finnhub).
 - **Weekdays only.** Weekend filings land on Monday's morning page.
-- **Local time.** launchd uses the Mac's clock, so the installer converts 8:00 and 17:00 New York into this Mac's time zone (6:00 and 15:00 in Denver). Rerun it after changing time zones or moving the project folder.
+- **Any time zone.** The slots are New York times, worked out in Python, so the Mac's own time zone doesn't matter. Rerun the installer after moving the project folder.
 - **The template is in the repo; the real job isn't.** [scripts/com.dailydigestdesk.collect.plist.template](scripts/com.dailydigestdesk.collect.plist.template) has placeholders; the installer fills in this Mac's paths and writes `~/Library/LaunchAgents/com.dailydigestdesk.collect.plist`.
-- **What a run does:** [scripts/run-digest.sh](scripts/run-digest.sh) runs `desk-collect` from the project folder, appends its output to `data/logs/desk-collect.log` (API keys redacted), and shows a pop-up, "Daily digest: 13 new items" with **Later** and **Open**. Open opens the new page (or the log, if no page was written); the pop-up closes by itself after 8 hours. A run with errors says so.
+- **What a run does:** [scripts/run-digest.sh](scripts/run-digest.sh) runs `desk-collect` from the project folder, appends its output to `data/logs/desk-collect.log` (API keys redacted), and shows a pop-up, "Daily digest: 13 new items" with **Later** and **Open**. Open opens the new page (or the log, if no page was written); the pop-up closes by itself after 8 hours. The script doesn't wait for a click: a pop-up left open would keep the job running, and launchd doesn't start a job that's still running (most likely why the 3pm runs of Nov 19 and 20, 2026 were skipped). A run with errors says so.
 - **Open the newest page with one bookmark.** Each run also saves the page as `data/digests/latest.html`. Open it once and bookmark it: `open data/digests/latest.html`.
 - **Why a pop-up, not a notification.** Current macOS silently drops notifications sent by scripts (`osascript display notification`), even with Script Editor allowed, and `terminal-notifier` no longer registers for notifications. Alerts (`display alert`) still show, and they can have an Open button.
 - **Remove it:** `scripts/install-schedule.sh --uninstall`.
