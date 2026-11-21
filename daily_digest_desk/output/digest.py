@@ -20,6 +20,7 @@ from daily_digest_desk.output.explainers import (
     Explainers, explainer_cards, info_button, load_explainers,
 )
 from daily_digest_desk.output.glossary import NO_GLOSSARY, Glossary, load_glossary
+from daily_digest_desk.reasoning.summarize import Summary
 from daily_digest_desk.red_flags import is_red_flag
 
 _NEW_YORK = ZoneInfo("America/New_York")
@@ -32,10 +33,12 @@ def _item(
     event: Event,
     explainers: Explainers | None = None,
     glossary: Glossary = NO_GLOSSARY,
+    summary: Summary | None = None,
 ) -> str:
     """One event as an <li> line: the title (a link if the url is http/https), its day,
     and an ⓘ button that opens its explainer card, if it has one. Glossary words in
-    the title get a hover tip, once each."""
+    the title get a hover tip, once each. If the filing has a summary, it goes
+    under the title, tagged as written by a model."""
     # Titles and urls come from outside sources: escape them, so a "<script>" in a
     # title shows up as text instead of running in the browser. Escape first, then
     # mark glossary words: the tips are our own HTML and must not be escaped.
@@ -52,12 +55,19 @@ def _item(
 
     info = info_button(event, explainers)
 
+    # The model's text is outside input too, like a title: escape it.
+    below = (
+        f'\n<p class="summary"><span class="ai-tag">AI summary</span> '
+        f"{html.escape(summary.summary)}</p>"
+        if summary else ""
+    )
+
     if is_red_flag(event):
         return (
             f'<li class="flag"><span class="flag-mark term" tabindex="0" data-tip="{_RED_FLAG_TIP}">'
-            f'⚠️ Red flag</span> {title} <span class="date">{day}</span>{info}</li>'
+            f'⚠️ Red flag</span> {title} <span class="date">{day}</span>{info}{below}</li>'
         )
-    return f'<li>{title} <span class="date">{day}</span>{info}</li>'
+    return f'<li>{title} <span class="date">{day}</span>{info}{below}</li>'
 
 
 _RED_FLAG_TIP = html.escape(
@@ -100,6 +110,7 @@ def _section(
     events: list[Event],
     explainers: Explainers | None = None,
     glossary: Glossary = NO_GLOSSARY,
+    summaries: Mapping[str, Summary] | None = None,
 ) -> str:
     """A heading and its events: red flags first, then the rest, each newest first.
     Two or more of a noisy label fold into one click-to-open line with a count:
@@ -116,16 +127,21 @@ def _section(
         if _label(event) in _NOISY_LABELS:
             noisy.setdefault(_label(event), []).append(event)
 
+    summaries = summaries or {}
+
+    def item(e: Event) -> str:
+        return _item(e, explainers, glossary, summaries.get(e.id))
+
     lines = []
     folded: set[str] = set()
     for event in newest_first:
         group = noisy.get(_label(event), [])
         if len(group) < 2:
-            lines.append(_item(event, explainers, glossary))
+            lines.append(item(event))
         elif _label(event) not in folded:
             # The whole group goes where its newest event would have been.
             folded.add(_label(event))
-            items = "\n".join(_item(e, explainers, glossary) for e in group)
+            items = "\n".join(item(e) for e in group)
             lines.append(
                 f"<li><details><summary>{html.escape(_label(event))} ({len(group)})</summary>\n"
                 f"<ul>\n{items}\n</ul></details></li>"
@@ -141,6 +157,7 @@ def build_digest(
     tickers: list[str],
     explainers: Explainers | None = None,
     glossary: Mapping[str, Mapping] | None = None,
+    summaries: Mapping[str, Summary] | None = None,
 ) -> str:
     """The whole page: Macro & Market first, then each holding in holdings order,
     then a hidden explainer card for each type on the page.
@@ -149,6 +166,8 @@ def build_digest(
     `tickers` (a holding you removed) still show, after the holdings, A to Z.
     `now` is only for the header; the caller decides which events are new.
     `explainers` and `glossary` default to the package's .toml files; tests pass their own.
+    `summaries` maps an event id to its summary (store.summaries_for); an event
+    missing from it just has no summary.
     """
     if explainers is None:
         explainers = load_explainers()
@@ -163,11 +182,11 @@ def build_digest(
 
     sections = []
     if None in by_ticker:  # no ticker: FRED releases and macro big moves
-        sections.append(_section("Macro & Market", by_ticker[None], explainers, terms))
+        sections.append(_section("Macro & Market", by_ticker[None], explainers, terms, summaries))
     removed = sorted(t for t in by_ticker if t is not None and t not in tickers)
     for ticker in [*tickers, *removed]:
         if ticker in by_ticker:
-            sections.append(_section(ticker, by_ticker[ticker], explainers, terms))
+            sections.append(_section(ticker, by_ticker[ticker], explainers, terms, summaries))
 
     if events:
         count = f"{len(events)} new item{'s' if len(events) != 1 else ''}"

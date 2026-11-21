@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from daily_digest_desk.ingestion.edgar_events import WATCH_FORMS
 from daily_digest_desk.output.digest import _GROUP_LABELS, _item, _section, build_digest
 from daily_digest_desk.output.explainers import explainer_key, load_explainers
+from daily_digest_desk.reasoning.summarize import Summary
 from digest_helpers import NOW, big_move, event, visible_lines
 
 # --- _item: one line ------------------------------------------------------------
@@ -220,3 +221,65 @@ def test_share_offering_filings_fold_together_only_when_noisy():
     # S-3, S-3ASR and 424B share a label but aren't noisy: each keeps its own line.
     page = _section("KEEL", [event("1", kind="S-3ASR"), event("2", kind="424B5", hours_ago=2)])
     assert "<details>" not in page
+
+
+# --- summaries: the model's few sentences under a filing ---------------------------
+
+def summary(text):
+    return Summary(summary=text, key_numbers=[])
+
+
+def test_item_shows_its_summary_under_the_title_with_a_tag():
+    line = _item(event("1", title="AAOI 8-K"), summary=summary("It may sell up to $550 million of stock."))
+    assert line == (
+        '<li><a href="https://sec.test/x">AAOI 8-K</a> <span class="date">Nov 17</span>\n'
+        '<p class="summary"><span class="ai-tag">AI summary</span> '
+        "It may sell up to $550 million of stock.</p></li>"
+    )
+
+
+def test_item_escapes_the_summary():
+    # The model's words are outside text, like a title.
+    line = _item(event("1"), summary=summary('An "at-the-market" offering <b>now</b> & later.'))
+    assert "An &quot;at-the-market&quot; offering &lt;b&gt;now&lt;/b&gt; &amp; later.</p>" in line
+
+
+def test_a_red_flag_line_keeps_its_summary():
+    line = _item(flagged("1"), summary=summary("The company says past results were wrong."))
+    assert line.startswith('<li class="flag">')
+    assert line.endswith('<span class="ai-tag">AI summary</span> The company says past results were wrong.</p></li>')
+
+
+def test_section_gives_each_event_its_own_summary():
+    page = _section("AAOI", [
+        event("8k", hours_ago=1, title="8-K"),
+        event("424b5", kind="424B5", hours_ago=2, title="424B5"),
+        event("form4", kind="4", hours_ago=3, title="Form 4"),  # no summary: just its line
+    ], summaries={"8k": summary("Eight."), "424b5": summary("Prospectus.")})
+    assert visible_lines(page) == [
+        "AAOI", "8-K Nov 17", "AI summary Eight.", "424B5 Nov 17", "AI summary Prospectus.", "Form 4 Nov 17",
+    ]
+
+
+def test_section_a_folded_filing_keeps_its_summary_inside_the_group():
+    page = _section("HUT", [
+        event("13d", kind="SCHEDULE 13D/A", hours_ago=1, title="13D/A"),
+        event("13g", kind="SCHEDULE 13G", hours_ago=2, title="13G"),
+    ], summaries={"13d": summary("He received shares.")})
+    assert visible_lines(page) == [
+        "HUT", "Big-holder stake filings (2)", "13D/A Nov 17", "AI summary He received shares.", "13G Nov 17",
+    ]
+
+
+def test_page_shows_summaries_for_holdings_and_removed_holdings():
+    page = build_digest(
+        [event("aapl", ticker="AAPL"), event("old", ticker="GONE")],  # GONE: a removed holding
+        NOW, ["AAPL"],
+        summaries={"aapl": summary("Apple one."), "old": summary("Gone one.")},
+    )
+    assert "AI summary Apple one." in visible_lines(page)
+    assert "AI summary Gone one." in visible_lines(page)
+
+
+def test_page_without_summaries_has_no_tag():
+    assert 'class="ai-tag"' not in build_digest([event("1")], NOW, ["AAPL"])

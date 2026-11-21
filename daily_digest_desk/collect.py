@@ -68,7 +68,9 @@ log = logging.getLogger(__name__)
 Fetcher = Callable[[Iterable[str], date], tuple[list[Event], dict[str, str]]]
 FinnhubFetcher = Callable[[str], dict]
 EarningsFetcher = Callable[[str, date], list[dict]]
-DigestBuilder = Callable[[list[Event], datetime], str]  # (events, now) -> HTML page
+# (events, now, summaries=...) -> HTML page. summaries is by keyword: build_digest's
+# third argument is tickers, which main() fills in ahead of time.
+DigestBuilder = Callable[..., str]
 DocumentFetcher = Callable[[str, str], list[tuple[str, str]]]  # (accession, form) -> documents
 Summarizer = Callable[[Event, dict[str, str], object], SummaryResult]  # (event, documents, client)
 # collect_summaries with the client filled in: called as (store, now=...).
@@ -358,7 +360,8 @@ def write_digest(
     out_dir: Path,
     build: DigestBuilder,
 ) -> Path:
-    """Write a page of the events stored since the last digest. Returns the file's path.
+    """Write a page of the events stored since the last digest, with the summaries
+    of those events. Returns the file's path.
 
     `now` should be taken just before this call. The cursor (`digest:last`) is set
     to it, so an event stored during the call lands on two pages at worst, never on
@@ -369,7 +372,8 @@ def write_digest(
     """
     cursor = store.get_cursor(_DIGEST_CURSOR)
     since = datetime.fromisoformat(cursor) if cursor else now - _FIRST_DIGEST_WINDOW
-    page = build(store.events_inserted_since(since), now)
+    events = store.events_inserted_since(since)
+    page = build(events, now, summaries=store.summaries_for(e.id for e in events))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # New York time in the name, with seconds, so a rerun in the same minute

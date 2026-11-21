@@ -1,3 +1,4 @@
+import functools
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,7 @@ from daily_digest_desk.collect import (
 )
 from daily_digest_desk.ingestion.edgar_text import MAX_CHARS
 from daily_digest_desk.models import Reading
+from daily_digest_desk.output.digest import build_digest
 from daily_digest_desk.reasoning.summarize import PROMPT_VERSION, Summary, SummaryError, SummaryResult
 from conftest import add_at, make_event
 
@@ -71,9 +73,11 @@ class FakeBuilder:
     def __init__(self, fail=False):
         self.fail = fail
         self.calls = []
+        self.summaries = []  # the summaries dict of each call
 
-    def __call__(self, events, now):
+    def __call__(self, events, now, *, summaries):  # by keyword, as build_digest needs
         self.calls.append(([e.id for e in events], now))
+        self.summaries.append(summaries)
         if self.fail:
             raise RuntimeError("boom")
         return "page: " + ", ".join(e.id for e in events)
@@ -141,6 +145,44 @@ def test_failed_write_keeps_the_cursor(store, tmp_path):
     with pytest.raises(FileExistsError):
         write_digest(store, MORNING, blocker, FakeBuilder())
     assert store.get_cursor("digest:last") is None
+
+
+
+def page_summary(text):
+    return Summary(summary=text, key_numbers=[])
+
+
+def save_summary(store, event_id, text):
+    store.add_summary(event_id, page_summary(text), model="claude-opus-5-5", prompt_version=1,
+                      input_tokens=1_000, output_tokens=100)
+
+
+def test_the_page_gets_the_summaries_of_its_events_only(store, monkeypatch, tmp_path):
+    add_at(store, monkeypatch, MORNING - timedelta(hours=1), [make_event("edgar:yesterday")])
+    save_summary(store, "edgar:yesterday", "On the morning page.")
+    write_digest(store, MORNING, tmp_path, FakeBuilder())
+    add_at(store, monkeypatch, MORNING + timedelta(hours=3), [make_event("edgar:new"), make_event("edgar:form4")])
+    save_summary(store, "edgar:new", "New today.")
+    build = FakeBuilder()
+
+    write_digest(store, EVENING, tmp_path, build)
+
+    # The evening page's events: edgar:new has a summary, edgar:form4 none. The
+    # morning filing's summary isn't sent, since that filing isn't on this page.
+    assert build.calls == [(["edgar:form4", "edgar:new"], EVENING)]
+    assert build.summaries == [{"edgar:new": page_summary("New today.")}]
+
+
+def test_the_real_page_builder_shows_a_summary(store, monkeypatch, tmp_path):
+    # With build_digest itself, set up as main() does: tickers filled in ahead,
+    # so summaries has to arrive by keyword, not as the third argument.
+    add_at(store, monkeypatch, MORNING - timedelta(hours=1), [make_event("edgar:1")])
+    save_summary(store, "edgar:1", "Revenue was $57.0 billion.")
+    build = functools.partial(build_digest, tickers=["AAPL"])
+
+    path = write_digest(store, MORNING, tmp_path, build)
+
+    assert '<span class="ai-tag">AI summary</span> Revenue was $57.0 billion.' in path.read_text(encoding="utf-8")
 
 
 # --- run: one whole desk-collect run, with fake sources -----------------------------

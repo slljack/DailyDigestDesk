@@ -42,3 +42,7 @@ details ul { margin-top: 0.25rem; }
 .term:focus { outline: none; }
 /* A red flag: a red label in front of the line, pinned to the top of its section. */
 .flag-mark { color: var(--danger); font-weight: 600; font-size: 0.9rem; }
+/* A filing's summary: under its title, tagged so the model's words never pass for the filing's. */
+.summary { margin: 0.15rem 0 0.6rem; font-size: 0.95rem; }
+.ai-tag { font-size: 0.7rem; color: var(--muted); border: 1px solid var(--line);
+          border-radius: 4px; padding: 0 0.3rem; margin-right: 0.3rem; vertical-align: 0.1em; }
