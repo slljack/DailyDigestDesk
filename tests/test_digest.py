@@ -1,9 +1,12 @@
+import html
 from datetime import datetime, timezone
 
 from daily_digest_desk.ingestion.edgar_events import WATCH_FORMS
-from daily_digest_desk.output.digest import _GROUP_LABELS, _item, _section, build_digest
+from daily_digest_desk.output.digest import (
+    _GROUP_LABELS, _item, _section, build_digest, mark_key_numbers,
+)
 from daily_digest_desk.output.explainers import explainer_key, load_explainers
-from daily_digest_desk.reasoning.summarize import Summary
+from daily_digest_desk.reasoning.summarize import KeyNumber, Summary
 from digest_helpers import NOW, big_move, event, visible_lines
 
 # --- _item: one line ------------------------------------------------------------
@@ -283,3 +286,166 @@ def test_page_shows_summaries_for_holdings_and_removed_holdings():
 
 def test_page_without_summaries_has_no_tag():
     assert 'class="ai-tag"' not in build_digest([event("1")], NOW, ["AAPL"])
+
+
+# --- mark_key_numbers: each key number gets a tip with its quote -------------------
+
+def kn(number, quote=None, source="EX-99.1"):
+    return KeyNumber(number=number, quote=quote or f"It was {number}.", source=source)
+
+
+def test_marks_a_key_number_with_its_source_and_quote():
+    marked, not_found = mark_key_numbers(
+        "Revenue was $115.8 billion.",
+        [kn("$115.8 billion", "Revenue was a record $115.8 billion.", "EX-99.2")],
+    )
+    assert marked == (
+        'Revenue was <span class="term keynum" tabindex="0" data-tip="'
+        'EX-99.2: “Revenue was a record $115.8 billion.”">$115.8 billion</span>.'
+    )
+    assert not_found == []
+
+
+def test_quote_line_breaks_become_spaces():
+    marked, _ = mark_key_numbers("EPS was $2.70.", [kn("$2.70", "earnings per diluted share were $2.70 and\n   $2.68,\nrespectively.")])
+    assert "were $2.70 and $2.68, respectively." in marked
+
+
+def test_escapes_the_quote_and_finds_a_number_with_an_ampersand():
+    # The text comes in escaped, so the number must be looked for escaped too.
+    marked, not_found = mark_key_numbers(
+        "The S&amp;P 500 fell.", [kn("S&P 500", 'The "S&P 500" <fell>.')],
+    )
+    assert not_found == []
+    assert 'data-tip="EX-99.1: “The &quot;S&amp;P 500&quot; &lt;fell&gt;.”"' in marked
+    assert ">S&amp;P 500</span> fell." in marked
+
+
+def test_a_number_inside_a_longer_number_is_not_marked():
+    marked, not_found = mark_key_numbers(
+        "Fees of 12%, 1,200 shares, $2.705 each, $2x70 total.",
+        [kn("2%"), kn("200"), kn("$2.70")],
+    )
+    assert "<span" not in marked  # "." in "$2.70" means a dot, not any character
+    assert [k.number for k in not_found] == ["2%", "200", "$2.70"]
+
+
+def test_a_number_at_the_end_of_a_sentence_or_before_a_comma_is_marked():
+    marked, not_found = mark_key_numbers("A fee of 2%, then 2%.", [kn("2%"), kn("2%")])
+    assert marked.count("<span") == 2
+    assert not_found == []
+
+
+def test_the_longer_of_two_numbers_that_start_alike_wins():
+    # Both match at "$550": the longer one must be tried first, or "$550 million"
+    # would be cut to "$550" and reported as not found.
+    marked, not_found = mark_key_numbers(
+        "Up to $550 million, or $550 a share.", [kn("$550"), kn("$550 million")],
+    )
+    assert ">$550 million</span>, or <span" in marked
+    assert ">$550</span> a share." in marked
+    assert not_found == []
+
+
+def test_only_the_first_mention_is_marked():
+    marked, _ = mark_key_numbers("It sold 2% now and 2% later.", [kn("2%")])
+    assert marked.count("<span") == 1
+    assert marked.endswith("and 2% later.")
+
+
+def test_a_number_listed_twice_gives_each_mention_its_own_quote():
+    marked, _ = mark_key_numbers(
+        "A 2% fee and a 2% stake.",
+        [kn("2%", "a fee of 2%", "8-K"), kn("2%", "a stake of 2%", "13D")],
+    )
+    assert marked.index("a fee of 2%") < marked.index("a stake of 2%")
+
+
+def test_a_number_not_in_the_text_is_returned():
+    missing = kn("$2.68")
+    marked, not_found = mark_key_numbers("EPS was $2.70.", [kn("$2.70"), missing])
+    assert not_found == [missing]
+    assert marked.count("<span") == 1
+
+
+def test_no_key_numbers_leaves_the_text_alone():
+    assert mark_key_numbers("Nothing to see.", []) == ("Nothing to see.", [])
+    # A blank number would match everywhere; it's skipped, not reported.
+    assert mark_key_numbers("Nothing to see.", [kn("  ", "x")]) == ("Nothing to see.", [])
+
+
+def test_the_real_nvda_summary_marks_all_five():
+    # NVDA's 8-K summary as stored on Nov 20, 2026, escaped as _item will pass it.
+    text = html.escape(
+        "NVIDIA reported third-quarter revenue of $115.8 billion, up 103% from a year ago, "
+        "with Data Center revenue of $107.6 billion. Earnings per diluted share (profit per "
+        "share) were $2.70 under standard accounting. The company returned $28.1 billion to "
+        "shareholders through buybacks and dividends, and expects fourth-quarter revenue of "
+        "$130.0 billion, plus or minus 3%."
+    )
+    numbers = [kn(n) for n in ["$115.8 billion", "$107.6 billion", "$2.70", "$28.1 billion", "$130.0 billion"]]
+    marked, not_found = mark_key_numbers(text, numbers)
+    assert not_found == []
+    assert marked.count('class="term keynum"') == 5
+
+
+# --- key numbers on the page: in the summary, or after "Also in the filing:" --------
+
+def summary_with(text, *key_numbers):
+    return Summary(summary=text, key_numbers=list(key_numbers))
+
+
+def test_item_marks_the_key_numbers_in_its_summary():
+    line = _item(event("1", title="AAOI 8-K"), summary=summary_with(
+        "It may sell up to $550 million of stock.",
+        kn("$550 million", "an offering price of up to $550 million", "8-K"),
+    ))
+    assert line == (
+        '<li><a href="https://sec.test/x">AAOI 8-K</a> <span class="date">Nov 17</span>\n'
+        '<p class="summary"><span class="ai-tag">AI summary</span> It may sell up to '
+        '<span class="term keynum" tabindex="0" data-tip="8-K: “an offering price of up to '
+        '$550 million”">$550 million</span> of stock.</p></li>'
+    )
+
+
+def test_a_key_number_not_in_the_summary_goes_after_also():
+    line = _item(event("1"), summary=summary_with(
+        "EPS was $2.70.", kn("$2.70"), kn("$2.68", "non-GAAP EPS was $2.68"),
+    ))
+    assert line.endswith(
+        ' <span class="also">Also in the filing: <span class="term keynum" tabindex="0" '
+        'data-tip="EX-99.1: “non-GAAP EPS was $2.68”">$2.68</span></span></p></li>'
+    )
+    assert line.count('class="term keynum"') == 2  # $2.70 in the text, $2.68 after Also
+
+
+def test_several_numbers_after_also_are_listed_in_order():
+    line = _item(event("1"), summary=summary_with("Nothing in here.", kn("$1"), kn("$2"), kn("$3")))
+    text = visible_lines(line)[-1]
+    assert text.endswith("Nothing in here. Also in the filing: $1, $2, $3")
+
+
+def test_no_also_when_every_key_number_is_in_the_summary():
+    line = _item(event("1"), summary=summary_with("A 2% fee.", kn("2%")))
+    assert "Also" not in line
+
+
+def test_also_escapes_its_numbers():
+    line = _item(event("1"), summary=summary_with("Nothing.", kn("<b>5</b>", "it was <b>5</b>")))
+    assert ">&lt;b&gt;5&lt;/b&gt;</span></span>" in line
+    assert "<b>" not in line
+
+
+def test_a_red_flag_line_marks_its_key_numbers_too():
+    line = _item(flagged("1"), summary=summary_with("Restated by $3 million.", kn("$3 million")))
+    assert line.startswith('<li class="flag">')
+    assert '">$3 million</span>' in line
+
+
+def test_page_shows_key_number_tips():
+    page = build_digest(
+        [event("aapl", ticker="AAPL")], NOW, ["AAPL"],
+        summaries={"aapl": summary_with("Revenue was $90 billion.", kn("$90 billion", "revenue of $90 billion"))},
+    )
+    assert 'data-tip="EX-99.1: “revenue of $90 billion”">$90 billion</span>' in page
+    assert "AI summary Revenue was $90 billion." in visible_lines(page)

@@ -46,3 +46,12 @@ details ul { margin-top: 0.25rem; }
 .summary { margin: 0.15rem 0 0.6rem; font-size: 0.95rem; }
 .ai-tag { font-size: 0.7rem; color: var(--muted); border: 1px solid var(--line);
           border-radius: 4px; padding: 0 0.3rem; margin-right: 0.3rem; vertical-align: 0.1em; }
+/* A key number in a summary. Its tip comes from .term, but it shows the filing's own
+   sentence, so: a solid underline (a glossary word's is dotted), and the tip opens
+   under the whole paragraph, as wide as it. Under the number, a long quote ran off
+   the right edge of a phone. Must come after .term to win. */
+.summary { position: relative; }
+.keynum { position: static; text-decoration-style: solid; text-decoration-color: var(--muted); }
+.keynum:hover::after, .keynum:focus::after { left: 0; right: 0; width: auto; max-width: none; }
+/* Key numbers the summary's sentences don't mention: quieter than the summary itself. */
+.also { color: var(--muted); font-size: 0.85rem; }

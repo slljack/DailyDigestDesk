@@ -9,7 +9,9 @@ explainers.py, the hover tips in glossary.py.
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping
+import re
+from collections import deque
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from importlib import resources
 from zoneinfo import ZoneInfo
@@ -20,13 +22,57 @@ from daily_digest_desk.output.explainers import (
     Explainers, explainer_cards, info_button, load_explainers,
 )
 from daily_digest_desk.output.glossary import NO_GLOSSARY, Glossary, load_glossary
-from daily_digest_desk.reasoning.summarize import Summary
+from daily_digest_desk.reasoning.summarize import KeyNumber, Summary
 from daily_digest_desk.red_flags import is_red_flag
 
 _NEW_YORK = ZoneInfo("America/New_York")
 
 # Light by default, dark when the system is. Kept small: one column, readable type.
 _STYLE = resources.files(__package__).joinpath("style.css").read_text(encoding="utf-8")
+
+
+
+def mark_key_numbers(escaped: str, key_numbers: Sequence[KeyNumber]) -> tuple[str, list[KeyNumber]]:
+    """`escaped` (a summary, already escaped) with each key number wrapped in a tip
+    that shows where it came from: 'EX-99.2: "Revenue for the third quarter was..."'.
+
+    Returns the marked text and the key numbers it couldn't find in it, so the page
+    can still show those. If a number is listed twice, the first time it appears in
+    the text gets the first one's quote, the second time the second's. A key number
+    with no text is skipped: there is nothing to show.
+    """
+    # Each number as it looks in escaped text ("S&P" is "S&amp;P" there), with the
+    # key numbers waiting for it, in order.
+    waiting: dict[str, deque[KeyNumber]] = {}
+    for k in key_numbers:
+        if k.number.strip():
+            waiting.setdefault(html.escape(k.number), deque()).append(k)
+    if not waiting:
+        return escaped, []
+
+    # Longest first, so "$550 million" is tried before "550" at the same spot.
+    # Not inside a longer number: no letter, digit, "." or "," just before ("2%" in
+    # "12%", "200" in "1,200"), and no letter or digit, or "." or "," with a digit,
+    # just after ("2.70" in "2.705", "1,2" in "1,234"). A sentence's own "." is fine.
+    numbers = sorted(waiting, key=len, reverse=True)
+    pattern = re.compile(
+        r"(?<![\w.,])(?:" + "|".join(map(re.escape, numbers)) + r")(?![\w]|[.,]\d)"
+    )
+
+    def wrap(m: re.Match) -> str:
+        queue = waiting[m.group(0)]
+        if not queue:
+            return m.group(0)  # a number more times in the text than in the list
+        k = queue.popleft()
+        quote = " ".join(k.quote.split())  # quotes keep the filing's line breaks
+        tip = html.escape(f"{k.source}: \u201c{quote}\u201d")
+        # "term" for the tip itself (style.css), "keynum" for how it looks. tabindex:
+        # a tap or the Tab key shows it too, as with glossary words.
+        return f'<span class="term keynum" tabindex="0" data-tip="{tip}">{m.group(0)}</span>'
+
+    marked = pattern.sub(wrap, escaped)
+    not_found = [k for queue in waiting.values() for k in queue]
+    return marked, not_found
 
 
 def _item(
@@ -38,7 +84,7 @@ def _item(
     """One event as an <li> line: the title (a link if the url is http/https), its day,
     and an ⓘ button that opens its explainer card, if it has one. Glossary words in
     the title get a hover tip, once each. If the filing has a summary, it goes
-    under the title, tagged as written by a model."""
+    under the title, tagged as written by a model, with a tip on each key number."""
     # Titles and urls come from outside sources: escape them, so a "<script>" in a
     # title shows up as text instead of running in the browser. Escape first, then
     # mark glossary words: the tips are our own HTML and must not be escaped.
@@ -55,12 +101,7 @@ def _item(
 
     info = info_button(event, explainers)
 
-    # The model's text is outside input too, like a title: escape it.
-    below = (
-        f'\n<p class="summary"><span class="ai-tag">AI summary</span> '
-        f"{html.escape(summary.summary)}</p>"
-        if summary else ""
-    )
+    below = _summary_html(summary) if summary else ""
 
     if is_red_flag(event):
         return (
@@ -68,6 +109,20 @@ def _item(
             f'⚠️ Red flag</span> {title} <span class="date">{day}</span>{info}{below}</li>'
         )
     return f'<li>{title} <span class="date">{day}</span>{info}{below}</li>'
+
+
+
+def _summary_html(summary: Summary) -> str:
+    """The summary paragraph: the model's sentences, each key number with a tip
+    showing its quote. A key number the sentences don't contain goes at the end,
+    after "Also in the filing:", so no checked number is hidden."""
+    # The model's text is outside input too, like a title: escape it, then mark.
+    text, not_found = mark_key_numbers(html.escape(summary.summary), summary.key_numbers)
+    if not_found:
+        # Each one marked on its own: the number is its whole text, so it's found.
+        also = ", ".join(mark_key_numbers(html.escape(k.number), [k])[0] for k in not_found)
+        text += f' <span class="also">Also in the filing: {also}</span>'
+    return f'\n<p class="summary"><span class="ai-tag">AI summary</span> {text}</p>'
 
 
 _RED_FLAG_TIP = html.escape(
