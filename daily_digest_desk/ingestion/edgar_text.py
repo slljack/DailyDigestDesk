@@ -21,7 +21,11 @@ from edgar import find
 
 from daily_digest_desk.ingestion.edgar import _ensure_identity
 
-MAX_CHARS = 40_000  # per document; a starting guess, to be checked on the eval
+# Per document. Was 40,000 (a starting guess); the v2 eval (Nov 22, 2026) found
+# NBIS's shareholder letter cut at 40% of its 98,083 characters, losing its capex,
+# ARR and one-off revenue news. 100,000 covers it and most filings' main text; the
+# few documents past it are long contracts and financial statements.
+MAX_CHARS = 100_000
 
 
 def is_wanted(form: str, doc_type: str) -> bool:
