@@ -21,3 +21,9 @@ data/
 # coverage
 .coverage
 htmlcov/
+
+# Summary eval: filings saved from SEC (public, refetched automatically when missing)
+evals/summaries/filings/
+# The cases and runs name the tickers I hold, like holdings.toml: kept on this Mac only
+evals/summaries/cases.toml
+evals/summaries/runs/

@@ -264,6 +264,7 @@ daily_digest_desk/
   reasoning/
     grounding.py          # (stub) ground claims in source filings
     summarize.py          # A filing -> a checked plain-English Summary (Claude)
+    summary_eval.py       # The summary eval: run fixed cases, write a grading sheet, score it
   output/
     digest.py             # Events -> the digest HTML page
     explainers.py         # The ⓘ buttons and explainer cards
@@ -271,6 +272,7 @@ daily_digest_desk/
     glossary.py           # Hover tips for glossary words
     glossary.toml         # Hover definitions for words on the page
     style.css             # The page's look (light and dark)
+evals/summaries/          # the eval's cases and runs: gitignored (they name my holdings)
 tests/                    # offline pytest suite
 scripts/                  # run-digest.sh, the launchd template, install-schedule.sh
 ```
