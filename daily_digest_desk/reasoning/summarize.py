@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -123,9 +124,39 @@ class SummaryResult:
     output_tokens: int  # thinking included: it's billed as output
 
 
-# A number as written in text: 62, 57.0, 1,200, 1,234.56. Not one glued to letters
-# or a hyphen, like 8-K, Q3, 10-Q or EX-99.1: those are labels, not amounts.
-_NUMBER = re.compile(r"(?<![\w.-])\d+(?:,\d{3})*(?:\.\d+)?(?![\w-])")
+# A number as written in text: 62, 57.0, 1,200, 1,234.56, $12-13 billion, a 90-day
+# period, $981M. Not a label: 8-K, 10-Q, EX-99.1, Q3, Series A-1, Rule 10b5-1.
+# A hyphen alone doesn't make a label; what's on its other side does.
+_DIGITS = r"\d+(?:,\d{3})*(?:\.\d+)?"
+_END = r"(?!\w|[.,]\d)"  # the whole number: not 1 of 1.2B, not 1 of 1,2345
+_NUMBER = re.compile(
+    rf"""
+    (?<![\w.])            # nothing glued on before: Q3, 3rd, the 1 of 99.1
+    (?<![A-Z]-)           # not after an uppercase word and a hyphen: EX-99, S-3, A-1
+    (?<!\d[a-z]-)         # not after a rule code and a hyphen: Rule 13a-16
+    (?<![a-z]\d-)         #   ... Rule 10b5-1
+    (?:
+        (?<=\$) {_DIGITS} (?=(?:[MBKT]|bn)? {_END})   # after a $, may end in M, B, K, T or bn
+      | {_DIGITS} {_END}
+    )
+    (?!-[A-Z])            # not before a hyphen and an uppercase letter: 8-K, 10-Q, 20-F
+    """,
+    re.VERBOSE,
+)
+
+
+def _value(number: str) -> Decimal:
+    """A number _NUMBER found, as a value: commas and trailing zeros don't matter.
+
+    Example: _value("7,843,779") == _value("7843779.00") is True, and so is
+    _value("5.350") == _value("5.35"). A rounded number isn't: 12 is not 11.7.
+    """
+    return Decimal(number.replace(",", ""))
+
+
+def _values(text: str) -> set[Decimal]:
+    """Every number in `text`, as values. Example: _values("up 62% to $1,200") == {62, 1200}."""
+    return {_value(number) for number in _NUMBER.findall(text)}
 
 
 def _normalize(text: str) -> str:
@@ -194,17 +225,17 @@ def check_summary(summary: Summary, documents: dict[str, str]) -> list[str]:
 
         # Compare the numbers, not the text: "$980.8 million (571%)" passes if
         # both 980.8 and 571 are in the quote, however the model wrote them.
-        numbers = _NUMBER.findall(kn.number)
+        numbers = _values(kn.number)
         if not numbers:
             problems.append(f"{kn.source}: {kn.number!r} has no number in it")
-        elif not set(numbers) <= set(_NUMBER.findall(kn.quote)):
+        elif not numbers <= _values(kn.quote):
             problems.append(f"{kn.source}: {kn.number!r} is not in its quote: {kn.quote!r}")
 
     # The summary-numbers check. Compare whole numbers, not text: "2" is inside
     # "62" as text, but it isn't the same number.
-    quoted = set(_NUMBER.findall(" ".join(kn.quote for kn in summary.key_numbers)))
+    quoted = _values(" ".join(kn.quote for kn in summary.key_numbers))
     for number in _NUMBER.findall(summary.summary):
-        if number not in quoted:
+        if _value(number) not in quoted:
             problems.append(f"summary: {number!r} is not in any quote")
     return problems
 

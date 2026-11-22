@@ -55,6 +55,43 @@ def test_number_pattern_skips_labels():
     assert _NUMBER.findall("This 8-K and 10-Q, EX-99.1, Q3, the 3rd quarter.") == []
 
 
+# One row per format. When a filing shows a new one, add a row here first.
+@pytest.mark.parametrize("text, numbers", [
+    # Labels: an uppercase word or a rule code on the other side of the hyphen.
+    ("8-K", []),
+    ("10-Q", []),
+    ("Form 20-F", []),
+    ("EX-99.1", []),
+    ("S-3ASR", []),
+    ("SCHEDULE 13D/A", []),
+    ("424B5", []),
+    ("Series A-1 preferred", []),
+    ("COVID-19", []),
+    ("Form 10-K405", []),
+    ("a Rule 10b5-1 plan", []),
+    ("Rule 13a-16", []),
+    ("Rule 10b-5", []),
+    # Numbers next to a hyphen: a digit or a lowercase word on the other side.
+    ("$12-13 billion", ["12", "13"]),
+    ("each 90-day period", ["90"]),
+    ("30-year notes", ["30"]),
+    ("a 1-for-10 reverse split", ["1", "10"]),
+    ("by mid-2027", ["2027"]),
+    ("from 2.75%-3.50%", ["2.75", "3.50"]),
+    ("-130.2", ["130.2"]),
+    # Dollar amounts with a letter for the size.
+    ("$981M", ["981"]),
+    ("$1.2B", ["1.2"]),
+    ("$5.5bn", ["5.5"]),
+    ("$500K", ["500"]),
+    # Whole numbers only, never the front of a longer one.
+    ("7843779.00", ["7843779.00"]),
+    ("3.5x", []),
+])
+def test_number_pattern_formats(text, numbers):
+    assert _NUMBER.findall(text) == numbers
+
+
 # --- _message_text -------------------------------------------------------------------
 
 def test_message_text_has_a_header_then_each_document_in_order():
@@ -144,6 +181,35 @@ def test_a_number_written_differently_from_its_quote_passes():
     # Both are in the quote, so the order and formatting don't matter.
     kn = REVENUE.model_copy(update={"number": "$57.0 billion (62%)"})
     assert check_summary(summary(key_numbers=[kn]), DOCS) == []
+
+
+def test_a_key_number_matches_its_quote_by_value():
+    # The HUT case: the quote is a form field, written without commas.
+    docs = {"SCHEDULE 13D/A": "<aggregateAmountOwned>7843779.00</aggregateAmountOwned>"}
+    kn = KeyNumber(
+        number="7,843,779 shares",
+        quote="<aggregateAmountOwned>7843779.00</aggregateAmountOwned>",
+        source="SCHEDULE 13D/A",
+    )
+    assert check_summary(summary("He owns 7,843,779 shares.", [kn]), docs) == []
+
+
+def test_a_summary_number_matches_a_quote_by_value():
+    # The Apple notes: the filing writes 5.350%, a summary may write 5.35%. And 1200 for 1,200.
+    docs = {"8-K": "$2,000,000,000 of its 5.350% Notes due 2036, and 1,200 more."}
+    notes = KeyNumber(number="5.350%", quote=docs["8-K"], source="8-K")
+    text = "Apple sold $2000000000 of 5.35% notes due 2036, and 1200 more."
+    assert check_summary(summary(text, [notes]), docs) == []
+
+
+def test_a_rounded_number_is_not_the_same_value():
+    # The Apple case: the model rounded 11.7% to 12%. A different number, not
+    # another way to write the same one.
+    docs = {"EX-99.1": "Services revenue grew 11.7% from a year ago."}
+    growth = KeyNumber(number="11.7%", quote="Services revenue grew 11.7%", source="EX-99.1")
+    assert check_summary(summary("Services revenue grew 12%.", [growth]), docs) == [
+        "summary: '12' is not in any quote",
+    ]
 
 
 def test_one_wrong_number_in_a_combined_number_fails():
