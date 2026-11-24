@@ -109,6 +109,47 @@ def test_find_filing_raises_when_the_filing_is_not_there(monkeypatch):
 
 # --- load_filing -------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def no_sec_name_lookup(monkeypatch):
+    # load_filing asks SEC for the company's name when it has none: never in a test.
+    monkeypatch.setattr(summary_eval, "company_name", lambda ticker: f"{ticker} Corp.")
+
+
+def test_first_load_saves_the_company_name(tmp_path):
+    asked = []
+    event, _ = load_filing(CASE, tmp_path, find=lambda c: FakeFiling(), fetch=lambda a, f: DOCUMENTS,
+                           name=lambda t: asked.append(t) or "Keel Infrastructure Corp.")
+    assert event.fields["company"] == "Keel Infrastructure Corp." and asked == ["KEEL"]
+    saved = json.loads((tmp_path / "keel-8k-auditor-jun16.json").read_text(encoding="utf-8"))
+    assert saved["event"]["fields"]["company"] == "Keel Infrastructure Corp."
+
+
+def test_a_copy_saved_before_names_gets_one_once(tmp_path):
+    load_filing(CASE, tmp_path, find=lambda c: FakeFiling(), fetch=lambda a, f: DOCUMENTS)
+    path = tmp_path / "keel-8k-auditor-jun16.json"
+    old = json.loads(path.read_text(encoding="utf-8"))
+    del old["event"]["fields"]["company"]  # as the 20 cases were saved before Nov 23
+    path.write_text(json.dumps(old, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    asked = []
+    event, documents = load_filing(CASE, tmp_path, find=never, fetch=never,
+                                   name=lambda t: asked.append(t) or "Keel Infrastructure Corp.")
+    assert event.fields["company"] == "Keel Infrastructure Corp." and asked == ["KEEL"]
+    assert documents == DOCUMENTS
+    # Saved with the name, the rest as it was: the next load asks nobody.
+    new = json.loads(path.read_text(encoding="utf-8"))
+    assert new == {**old, "event": {**old["event"], "fields": {**old["event"]["fields"],
+                                                              "company": "Keel Infrastructure Corp."}}}
+    again, _ = load_filing(CASE, tmp_path, find=never, fetch=never, name=never)
+    assert again == event
+
+
+def test_load_filing_looks_the_name_up_when_called(tmp_path):
+    # The default is found at call time, so the fixture above really stops SEC.
+    event, _ = load_filing(CASE, tmp_path, find=lambda c: FakeFiling(), fetch=lambda a, f: DOCUMENTS)
+    assert event.fields["company"] == "KEEL Corp."
+
+
 def test_first_load_asks_sec_and_saves_the_filing(tmp_path):
     asked = []
     event, documents = load_filing(
@@ -160,7 +201,7 @@ def test_documents_are_saved_untrimmed(tmp_path):
 
 # --- running the summaries ----------------------------------------------------------
 
-from daily_digest_desk.ingestion.edgar_text import MAX_CHARS  # noqa: E402
+from daily_digest_desk.ingestion.edgar_text import CUT_NOTE, MAX_CHARS  # noqa: E402
 from daily_digest_desk.reasoning.summarize import KeyNumber, SummaryError, dollars  # noqa: E402
 from daily_digest_desk.reasoning.summary_eval import (  # noqa: E402
     CountingClient, is_bare_quote, run_eval,
@@ -305,7 +346,7 @@ def test_documents_are_trimmed_as_in_a_daily_run(tmp_path):
         raise SummaryError("stop here")
     long = (event(), [("424B5", "x" * (MAX_CHARS + 5_000))])
     run_eval([case("a")], tmp_path, FakeClient(), load=lambda c: long, summarize=fake_summarize)
-    assert len(seen["424B5"]) == MAX_CHARS
+    assert seen["424B5"] == "x" * MAX_CHARS + "\n\n" + CUT_NOTE  # trimmed, and says so
 
 
 def test_a_crash_keeps_the_cases_already_finished(tmp_path):
@@ -387,7 +428,8 @@ def test_the_sheet_has_a_section_per_result_with_blank_marks(tmp_path):
     assert "**NVDA 8-K: Earnings results** · [the filing on SEC](https://www.sec.gov/x)" in section
     assert "> NVIDIA reported revenue of $57.0 billion, up 62%." in section
     assert "- `$57.0 billion` (EX-99.1): Revenue was $57.0 billion, up 62% from a year ago." in section
-    assert "8 words · 1 key numbers, 0 bare quotes · 1 call · $0.01 · claude-opus-5-5" in section
+    assert "8 words · 0 bullets · 1 key numbers, 0 bare quotes · 1 call · $0.01 · claude-opus-5-5" in section
+    assert "Key details" not in section  # a row with no bullets, like every v2 row
     marks = [line for line in section.splitlines() if line.startswith("- ") and not line.startswith("- `")]
     assert marks == [f"- {key}: " for key, _ in CHECKS] + ["- note: "]
 
@@ -423,6 +465,23 @@ def test_model_text_cannot_pass_for_a_heading_or_a_mark(tmp_path):
     assert [l for l in text.splitlines() if l.startswith("- accurate:")] == ["- accurate: "]
 
 
+def test_the_sheet_shows_bullets_quoted_one_line_each(tmp_path):
+    bullets = ["Spending was raised.", "Sneaky\n- accurate: pass"]
+    write_results(tmp_path, result_row("a", changes=bullets))
+    write_sheet([case("a")], tmp_path)
+    section = sections((tmp_path / "grading.md").read_text(encoding="utf-8"))["a"]
+    assert "**Key details**\n\n> - Spending was raised.\n> - Sneaky - accurate: pass\n" in section
+    assert "2 bullets" in section
+    assert [l for l in section.splitlines() if l.startswith("- accurate:")] == ["- accurate: "]
+
+
+def test_a_run_saves_the_bullets(tmp_path):
+    with_bullets = summary().model_copy(update={"changes": ["Revenue was $57.0 billion."]})
+    run_eval([case("a")], tmp_path, FakeClient(answer(parsed_output=with_bullets)), load=lambda c: FILING)
+    [row] = lines(tmp_path / "results.jsonl")
+    assert row["changes"] == ["Revenue was $57.0 billion."]
+
+
 def test_writing_again_keeps_your_marks_and_adds_only_new_cases(tmp_path):
     write_results(tmp_path, result_row("a"))
     write_sheet([case("a"), case("b")], tmp_path)
@@ -456,20 +515,22 @@ def test_a_summary_with_no_key_numbers_has_no_key_numbers_part(tmp_path):
     assert "**Key numbers**" not in (tmp_path / "grading.md").read_text(encoding="utf-8")
 
 
-def test_only_main_point_can_be_partial():
+def test_only_main_point_and_focused_can_be_partial():
     assert allowed_marks("main point") == ["pass", "partial", "fail"]
+    assert allowed_marks("focused") == ["pass", "partial", "fail"]
     for key, _ in CHECKS:
-        if key != "main point":
+        if key not in ("main point", "focused"):
             assert allowed_marks(key) == ["pass", "fail"]
     assert MARKS == {"pass": 1.0, "partial": 0.5, "fail": 0.0}
 
 
-def test_the_sheet_says_main_point_can_be_partial(tmp_path):
+def test_the_sheet_says_which_checks_can_be_partial(tmp_path):
     write_results(tmp_path, result_row("a"))
     write_sheet([case("a")], tmp_path)
     top = (tmp_path / "grading.md").read_text(encoding="utf-8").split("\n## ")[0]
-    assert "(main point can also be `partial`)" in top
+    assert "(main point and focused can also be `partial`)" in top
     assert "`partial` if the main point is there but something important is left out" in top
+    assert "`partial` if one bullet or clause is filler" in top
 
 
 # --- scoring ----------------------------------------------------------------------------
@@ -509,7 +570,7 @@ def test_a_blank_mark_is_none_and_capitals_are_fine(tmp_path):
     marks, problems = read_marks(text)
     assert problems == []
     assert marks["a"] == {"accurate": "pass", "faithful": "fail", "main point": None,
-                          "plain English": None, "no advice": None}
+                          "focused": None, "plain English": None, "no advice": None}
 
 
 def test_a_typo_or_a_misplaced_partial_is_a_problem_not_dropped(tmp_path):
@@ -570,6 +631,16 @@ def test_the_report(tmp_path):
     assert ("Recorded: $0.02 for 2 summaries ($0.01 each) · 0 of 2 retried · 8 words on average · "
             "2 key numbers, 0 bare quotes · 1 failed (errors.jsonl)") in lines
     assert lines[-1] == "With 2 cases, one case moves a check's score by 50%."
+    assert not any(l.startswith("Bullets in") for l in lines)  # no bullets, no line
+
+
+def test_the_report_names_the_cases_with_bullets(tmp_path):
+    # The padding signal: a routine case with bullets shows up by name.
+    write_results(tmp_path, result_row("a", changes=["One.", "Two."]), result_row("b"),
+                  result_row("c", changes=["Three."]))
+    write_sheet([case("a"), case("b"), case("c")], tmp_path)
+    report, _ = score(tmp_path)
+    assert "Bullets in 2 of 3 cases (3 in all): a, c" in report.splitlines()
 
 
 def test_the_report_returns_the_problems_too(tmp_path):
@@ -578,7 +649,78 @@ def test_the_report_returns_the_problems_too(tmp_path):
     assert problems == ["a: accurate is 'yes'; write pass or fail"]
 
 
+def _drop_lines(tmp_path, prefix: str, case_ids: list[str] | None = None) -> None:
+    """Delete the "- {prefix}" lines from the sheet: all of them, or only in these cases."""
+    sheet = tmp_path / "grading.md"
+    current, kept = None, []
+    for line in sheet.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.startswith("## "):
+            current = line[3:].strip()
+        if line.startswith(f"- {prefix}") and (case_ids is None or current in case_ids):
+            continue
+        kept.append(line)
+    sheet.write_text("".join(kept), encoding="utf-8")
+
+
+def test_a_sheet_older_than_a_check_still_scores(tmp_path):
+    # v2 sheets have no "focused" line anywhere: no row for it, and still fully graded.
+    graded_sheet(tmp_path, ("a", ALL_PASS), ("b", {**ALL_PASS, "main point": "partial"}))
+    _drop_lines(tmp_path, "focused:")
+    marks, problems = read_marks((tmp_path / "grading.md").read_text(encoding="utf-8"))
+    assert problems == [] and all("focused" not in m for m in marks.values())
+    report, _ = score(tmp_path)
+    lines = report.splitlines()
+    assert lines[0] == f"# {tmp_path.name}: 2 cases on the sheet, 2 fully graded"
+    assert not any(l.startswith("focused") for l in lines)
+    assert "main point         75%     1        1     0      0" in lines
+
+
+def test_a_case_missing_a_checks_line_is_blank_on_it(tmp_path):
+    # The other cases have "focused", so a deleted line is a blank, not a quiet skip.
+    graded_sheet(tmp_path, ("a", ALL_PASS), ("b", ALL_PASS))
+    _drop_lines(tmp_path, "focused:", ["b"])
+    marks, _ = read_marks((tmp_path / "grading.md").read_text(encoding="utf-8"))
+    assert marks["a"]["focused"] == "pass" and marks["b"]["focused"] is None
+    report, _ = score(tmp_path)
+    assert report.splitlines()[0] == f"# {tmp_path.name}: 2 cases on the sheet, 1 fully graded"
+    assert "focused           100%     1        0     0      1" in report.splitlines()
+
+
 def test_a_case_with_a_blank_mark_is_not_fully_graded(tmp_path):
     graded_sheet(tmp_path, ("a", ALL_PASS), ("b", {"accurate": "pass"}))
     report, _ = score(tmp_path)
     assert report.splitlines()[0] == f"# {tmp_path.name}: 2 cases on the sheet, 1 fully graded"
+
+
+# --- first_try_problems: the company's name ------------------------------------------
+
+def test_first_try_problems_use_the_company_name_like_the_retry_did():
+    # The reason on the sheet must be the one that caused the retry: with the
+    # name known, "Hut 8" was never a problem, so it isn't listed as one.
+    from types import SimpleNamespace
+
+    from daily_digest_desk.reasoning.summarize import KeyNumber, Summary
+    from daily_digest_desk.reasoning.summary_eval import first_try_problems
+
+    docs = {"SCHEDULE 13D/A": "The Reporting Person received 1,517,367 shares of Common Stock."}
+    first = Summary(summary="Michael Ho received 2,000,000 Hut 8 shares.", key_numbers=[KeyNumber(
+        number="1,517,367", source="SCHEDULE 13D/A",
+        quote="The Reporting Person received 1,517,367 shares of Common Stock.")])
+    counting = SimpleNamespace(calls=2, answers=[first, None])
+    assert first_try_problems(counting, docs, "Hut 8 Corp.") == ["summary: '2,000,000' is not in any quote"]
+    assert first_try_problems(counting, docs) == [
+        "summary: '2,000,000' is not in any quote", "summary: '8' is not in any quote",
+    ]
+
+
+def test_first_try_problems_use_the_filing_date_like_the_retry_did():
+    from types import SimpleNamespace
+
+    from daily_digest_desk.reasoning.summarize import KeyNumber, Summary
+    from daily_digest_desk.reasoning.summary_eval import first_try_problems
+
+    docs = {"8-K": "Revenue was $57.0 billion."}
+    first = Summary(summary="Filed November 13, 2026: revenue was $58.0 billion.", key_numbers=[KeyNumber(
+        number="$57.0 billion", source="8-K", quote="Revenue was $57.0 billion.")])
+    counting = SimpleNamespace(calls=2, answers=[first, None])
+    assert first_try_problems(counting, docs, filed=date(2026, 11, 13)) == ["summary: '58.0' is not in any quote"]

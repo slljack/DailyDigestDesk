@@ -90,7 +90,9 @@ def _occurred_at(filing) -> datetime:
     return datetime.combine(filed, time.min, tzinfo=timezone.utc)
 
 
-def filing_to_event(ticker: str, filing) -> Event:
+def filing_to_event(ticker: str, filing, company: str | None = None) -> Event:
+    """`company` is the ticker's name as SEC has it ("Hut 8 Corp."), saved so the
+    summary checker can tell the 8 in "Hut 8" from a number. None leaves it out."""
     form = filing.form
     items = parse_items(getattr(filing, "items", None))
     amended = " (amended)" if form.endswith("/A") else ""
@@ -113,6 +115,7 @@ def filing_to_event(ticker: str, filing) -> Event:
             "accession_number": filing.accession_number,
             "filing_date": str(filing.filing_date),
             "items": items,
+            **({"company": company} if company else {}),
         },
     )
 
@@ -131,10 +134,12 @@ def fetch_edgar_events(
     errors: dict[str, str] = {}
     for ticker in tickers:
         try:
-            filings = _company(ticker).get_filings(
+            company = _company(ticker)
+            filings = company.get_filings(
                 form=list(forms), filing_date=f"{since.isoformat()}:"
             )
-            events.extend(filing_to_event(ticker, f) for f in filings)
+            # The name is on the Company we already have: no extra SEC request.
+            events.extend(filing_to_event(ticker, f, company.name) for f in filings)
         except Exception as exc:  # noqa: BLE001 — isolate per-ticker failures
             log.warning("EDGAR fetch failed for %s: %s", ticker, exc)
             errors[ticker] = str(exc)

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -131,9 +132,9 @@ REVENUE = KeyNumber(
 
 
 def save(store, event_id="edgar:1", text="Revenue was $57.0 billion.", key_numbers=(REVENUE,),
-         prompt_version=1, input_tokens=28_000, output_tokens=500):
+         prompt_version=1, input_tokens=28_000, output_tokens=500, changes=()):
     store.add_summary(
-        event_id, Summary(summary=text, key_numbers=list(key_numbers)),
+        event_id, Summary(summary=text, key_numbers=list(key_numbers), changes=list(changes)),
         model="claude-opus-5-5", prompt_version=prompt_version,
         input_tokens=input_tokens, output_tokens=output_tokens,
     )
@@ -152,7 +153,46 @@ def test_add_summary_saves_every_column_in_its_place(store, monkeypatch):
     save(store, input_tokens=28_131, output_tokens=496)
     (row,) = summary_rows(store)
     assert row[:2] == ("edgar:1", "Revenue was $57.0 billion.")
-    assert row[3:] == ("claude-opus-5-5", 1, 28_131, 496, "2026-11-17T13:00:00+00:00")
+    assert row[3:] == ("claude-opus-5-5", 1, 28_131, 496, "2026-11-17T13:00:00+00:00", "[]")
+
+
+def test_bullets_are_saved_and_come_back_in_order(store):
+    bullets = ["The 2026 forecast is now at the low end.", "Capital spending was raised."]
+    save(store, changes=bullets)
+    assert store.summaries_for(["edgar:1"])["edgar:1"].changes == bullets
+
+
+# The summaries table as it was before prompt v3: 8 columns, no "changes".
+_V2_SUMMARIES = """
+CREATE TABLE summaries (
+    event_id TEXT PRIMARY KEY, summary TEXT NOT NULL, key_numbers TEXT NOT NULL,
+    model TEXT NOT NULL, prompt_version INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL, inserted_at TEXT NOT NULL
+);
+INSERT INTO summaries VALUES ('edgar:old', 'Saved by v2.', '[]', 'claude-opus-5-5', 2, 1, 1, 'then');
+"""
+
+
+def test_an_older_database_gets_the_bullets_column_and_keeps_its_rows(tmp_path):
+    path = tmp_path / "events.db"
+    with sqlite3.connect(path) as old:
+        old.executescript(_V2_SUMMARIES)
+    with Store(path) as store:
+        assert store.summaries_for(["edgar:old"]) == {
+            "edgar:old": Summary(summary="Saved by v2.", key_numbers=[], changes=[]),
+        }
+        save(store, event_id="edgar:new", changes=["A bullet."])  # and new rows can use it
+        assert store.summaries_for(["edgar:new"])["edgar:new"].changes == ["A bullet."]
+
+
+def test_opening_an_upgraded_database_again_changes_nothing(tmp_path):
+    path = tmp_path / "events.db"
+    with sqlite3.connect(path) as old:
+        old.executescript(_V2_SUMMARIES)
+    Store(path).close()
+    with Store(path) as store:  # the column is there now: no second ALTER TABLE
+        columns = [row[1] for row in store._conn.execute("PRAGMA table_info(summaries)")]
+    assert columns.count("changes") == 1 and columns[-1] == "changes"
 
 
 def test_add_summary_key_numbers_come_back_from_the_json(store):

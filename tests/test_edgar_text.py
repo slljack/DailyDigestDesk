@@ -2,7 +2,7 @@ import pytest
 
 from daily_digest_desk.ingestion import edgar_text
 from daily_digest_desk.ingestion.edgar_text import (
-    fetch_filing_documents, is_wanted, trim_documents,
+    CUT_NOTE, fetch_filing_documents, is_wanted, trim_documents,
 )
 
 
@@ -106,8 +106,17 @@ def test_fetch_raises_for_an_unknown_accession_number(fake_edgar):
 
 def test_trim_cuts_each_document_to_its_beginning():
     docs = [("8-K", "abcdef"), ("EX-99.1", "gh")]
-    # Longer than max_chars: cut. Shorter: kept whole.
-    assert trim_documents(docs, max_chars=3) == {"8-K": "abc", "EX-99.1": "gh"}
+    # Longer than max_chars: cut, with the note. Shorter: kept whole.
+    assert trim_documents(docs, max_chars=3) == {"8-K": f"abc\n\n{CUT_NOTE}", "EX-99.1": "gh"}
+
+
+def test_a_document_exactly_at_the_limit_is_not_cut():
+    assert trim_documents([("8-K", "abc")], max_chars=3) == {"8-K": "abc"}
+
+
+def test_the_cut_note_has_no_digits():
+    # A digit in it would be read as a number the summary has to quote.
+    assert not any(ch.isdigit() for ch in CUT_NOTE)
 
 
 def test_trim_keeps_the_order():
@@ -117,7 +126,7 @@ def test_trim_keeps_the_order():
 
 def test_trim_defaults_to_max_chars():
     (text,) = trim_documents([("8-K", "x" * (edgar_text.MAX_CHARS + 10))]).values()
-    assert len(text) == edgar_text.MAX_CHARS
+    assert text == "x" * edgar_text.MAX_CHARS + "\n\n" + CUT_NOTE
 
 
 def test_trim_empty():

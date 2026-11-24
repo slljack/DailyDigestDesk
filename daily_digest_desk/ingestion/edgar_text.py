@@ -27,6 +27,11 @@ from daily_digest_desk.ingestion.edgar import _ensure_identity
 # few documents past it are long contracts and financial statements.
 MAX_CHARS = 100_000
 
+# Added where a document was cut, so the model knows the rest wasn't sent and
+# doesn't write "the filing doesn't say" about what may be past the cut. No
+# digits, so it can't be read as a number to check. The prompt names it.
+CUT_NOTE = "[Cut off here: the rest of this document was not sent.]"
+
 
 def is_wanted(form: str, doc_type: str) -> bool:
     """Whether a file is worth reading for a summary: the main document (its type
@@ -59,8 +64,12 @@ def trim_documents(
     max_chars: int = MAX_CHARS,
 ) -> dict[str, str]:
     """The documents by type, each cut to its first `max_chars`, in the same order.
+    A document that was cut ends with CUT_NOTE on a line of its own.
 
     Example: trim_documents([("8-K", "abcdef"), ("EX-99.1", "gh")], max_chars=3)
-    gives {"8-K": "abc", "EX-99.1": "gh"}.
+    gives {"8-K": "abc\n\n" + CUT_NOTE, "EX-99.1": "gh"}.
     """
-    return {doc_type: text[:max_chars] for doc_type, text in documents}
+    return {
+        doc_type: text if len(text) <= max_chars else f"{text[:max_chars]}\n\n{CUT_NOTE}"
+        for doc_type, text in documents
+    }

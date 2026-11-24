@@ -81,6 +81,33 @@ def test_automatic_shelf_and_prospectus_titles():
     assert filing_to_event("AAOI", prospectus).title == "AAOI 424B5: Prospectus: securities being offered"
 
 
+def test_the_company_name_is_saved_when_given():
+    f = FakeFiling(form="SCHEDULE 13D/A", filing_date=date(2026, 11, 13))
+    assert filing_to_event("HUT", f, "Hut 8 Corp.").fields["company"] == "Hut 8 Corp."
+    # No name, no key: an event saved before names were collected looks the same.
+    assert "company" not in filing_to_event("HUT", f).fields
+    assert "company" not in filing_to_event("HUT", f, "").fields
+
+
+def test_fetch_passes_each_tickers_name_from_its_company(monkeypatch):
+    # The name comes from the Company already used to list filings: one per ticker.
+    from daily_digest_desk.ingestion import edgar_events
+
+    class FakeCompany:
+        def __init__(self, ticker):
+            self.name = {"HUT": "Hut 8 Corp.", "AAPL": "Apple Inc."}[ticker]
+
+        def get_filings(self, form, filing_date):
+            return [FakeFiling(form="8-K", filing_date=date(2026, 11, 13))]
+
+    looked_up = []
+    monkeypatch.setattr(edgar_events, "_company", lambda t: looked_up.append(t) or FakeCompany(t))
+    events, errors = edgar_events.fetch_edgar_events(["HUT", "AAPL"], since=date(2026, 11, 1))
+    assert errors == {}
+    assert [e.fields["company"] for e in events] == ["Hut 8 Corp.", "Apple Inc."]
+    assert looked_up == ["HUT", "AAPL"]  # once each: no second request for the name
+
+
 def test_every_watched_form_has_a_description():
     # An 8-K is titled by its items; every other watched form needs a description,
     # or its title would just repeat the form name.

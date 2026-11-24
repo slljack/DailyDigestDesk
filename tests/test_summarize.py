@@ -2,12 +2,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from decimal import Decimal
 
 from daily_digest_desk.models import Event
 from daily_digest_desk.reasoning import summarize as summarize_module
 from daily_digest_desk.reasoning.summarize import (
-    MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary, SummaryError, SummaryResult,
-    _message_text, _normalize, _NUMBER, _retry_note, _tokens, check_summary, summarize,
+    MAX_CHANGE_WORDS, MAX_CHANGES, MAX_KEY_NUMBERS, MAX_WORDS, KeyNumber, Summary,
+    SummaryError, SummaryResult, _message_text, _normalize, _NUMBER, _retry_note, _tokens, check_summary, summarize,
     dollars, summarize_checked,
 )
 
@@ -97,10 +98,17 @@ def test_number_pattern_formats(text, numbers):
 def test_message_text_has_a_header_then_each_document_in_order():
     docs = {"8-K": "cover", "EX-99.1": "press release"}
     assert _message_text(event(), docs) == (
-        "NVDA 8-K, filed 2026-11-19: NVIDIA 8-K (2.02 Results of Operations)\n\n"
+        "NVDA 8-K, filed 2026-11-19\n\n"
         '<document type="8-K">\ncover\n</document>\n\n'
         '<document type="EX-99.1">\npress release\n</document>'
     )
+
+
+def test_message_text_leaves_out_our_page_label():
+    # Titles are our labels ("Activist / >5% stake" for every 13D), not the
+    # filing's words: the model would take them as facts.
+    activist = event().model_copy(update={"title": "HUT SCHEDULE 13D/A (amended): Activist / >5% stake"})
+    assert "Activist" not in _message_text(activist, {"SCHEDULE 13D/A": "the filing"})
 
 
 def test_message_text_uses_new_yorks_date():
@@ -234,7 +242,8 @@ def test_an_important_date_quoted_like_a_key_number_passes():
 
 
 def test_a_routine_date_with_no_quote_fails():
-    # The live NVDA case: the prompt asks for "the third quarter" instead.
+    # The live NVDA case: a date needs its sentence quoted, like any number
+    # (prompt v3 asks for the period's end date, with its quote).
     text = "Revenue for the quarter ended October 25, 2026 was $57.0 billion."
     assert check_summary(summary(text), DOCS) == [
         "summary: '25' is not in any quote", "summary: '2026' is not in any quote",
@@ -301,6 +310,282 @@ def test_key_numbers_up_to_the_limit_pass_and_one_more_fails():
     ]
 
 
+# --- check_summary: the "key detail" bullets ---------------------------------------
+
+def with_bullets(*changes):
+    return summary().model_copy(update={"changes": list(changes)})
+
+
+def test_bullets_up_to_the_limit_pass_and_one_more_fails():
+    bullet = "Revenue was $57.0 billion."
+    assert check_summary(with_bullets(*[bullet] * MAX_CHANGES), DOCS) == []
+    assert check_summary(with_bullets(*[bullet] * (MAX_CHANGES + 1)), DOCS) == [
+        f"{MAX_CHANGES + 1} bullets, more than {MAX_CHANGES}",
+    ]
+
+
+def test_an_empty_bullet_and_a_rambling_one_fail():
+    long = "word " * (MAX_CHANGE_WORDS + 1)
+    ok = "word " * MAX_CHANGE_WORDS
+    assert check_summary(with_bullets(" ", ok, long), DOCS) == [
+        "bullet 1: empty",
+        f"bullet 3: {MAX_CHANGE_WORDS + 1} words, more than {MAX_CHANGE_WORDS}",
+    ]
+
+
+def test_a_quoted_number_in_a_bullet_passes():
+    assert check_summary(with_bullets("Growth was 62% from a year ago."), DOCS) == []
+
+
+def test_a_number_in_a_bullet_with_no_quote_is_caught_and_named():
+    # The bullets are where a summary could add numbers past the checks.
+    problems = check_summary(with_bullets("Growth was 62%.", "It hired 1,200 people."), DOCS)
+    assert problems == ["bullet 2: '1,200' is not in any quote"]
+
+
+# --- check_summary: million vs billion -----------------------------------------------
+
+SCALE_DOCS = {"EX-99.1": "Revenue was $4.2 million in the quarter.\nRevenues 146.1 980.8 571%"}
+MILLION = KeyNumber(number="$4.2 million", quote="Revenue was $4.2 million in the quarter.", source="EX-99.1")
+TABLE = KeyNumber(number="$980.8 million", quote="Revenues 146.1 980.8 571%", source="EX-99.1")
+
+
+@pytest.mark.parametrize("text", ["Revenue was $4.2 billion.", "Revenue was $4.2B.", "Revenue was $4.2 thousand."])
+def test_the_right_value_at_the_wrong_scale_fails(text):
+    problems = check_summary(summary(text, [MILLION]), SCALE_DOCS)
+    assert len(problems) == 1 and problems[0].startswith("summary: '$4.2") and "the quote says million" in problems[0]
+
+
+def test_the_same_scale_written_another_way_passes():
+    for text in ["Revenue was $4.2 million.", "Revenue was $4.2M.", "Revenue was $4.2 Million."]:
+        assert check_summary(summary(text, [MILLION]), SCALE_DOCS) == [], text
+
+
+def test_bn_is_billion():
+    docs = {"EX-99.1": "Debt was $1.2 billion."}
+    debt = KeyNumber(number="$1.2 billion", quote="Debt was $1.2 billion.", source="EX-99.1")
+    assert check_summary(summary("Debt was $1.2bn.", [debt]), docs) == []
+
+
+def test_a_table_line_with_no_scale_word_is_not_judged():
+    # The table's "in millions" heading is too far away to know: leave it alone.
+    assert check_summary(summary("Revenue was $980.8 million.", [TABLE]), SCALE_DOCS) == []
+    assert check_summary(summary("Revenue was $980.8 billion.", [TABLE]), SCALE_DOCS) == []
+
+
+def test_a_key_numbers_own_scale_is_checked_against_its_quote():
+    wrong = KeyNumber(number="$4.2 billion", quote=MILLION.quote, source="EX-99.1")
+    problems = check_summary(summary("Revenue was $4.2 million.", [wrong]), SCALE_DOCS)
+    assert problems == ["EX-99.1: '$4.2 billion' but the quote says million"]
+
+
+def test_a_bullet_at_the_wrong_scale_is_named():
+    s = Summary(summary="Revenue was $4.2 million.", key_numbers=[MILLION], changes=["It was $4.2 billion."])
+    assert check_summary(s, SCALE_DOCS) == ["bullet 1: '$4.2 billion' but the quote says million"]
+
+
+def test_a_table_value_isnt_failed_by_the_same_value_at_another_scale_elsewhere():
+    # The advisor's case: a correct "$1.5 billion" from a table line, and "1.5
+    # million shares" in another quote. The table's unit is unknown: not judged.
+    docs = {"EX-99.1": "Revenues 1.5 0.9 67%\nThe company repurchased 1.5 million shares."}
+    table = KeyNumber(number="$1.5 billion", quote="Revenues 1.5 0.9 67%", source="EX-99.1")
+    shares = KeyNumber(number="1.5 million", quote="The company repurchased 1.5 million shares.", source="EX-99.1")
+    s = summary("Revenue was $1.5 billion; it bought back 1.5 million shares.", [table, shares])
+    assert check_summary(s, docs) == []
+    # With no table line, the same value at the wrong scale still fails.
+    s = summary("It bought back 1.5 billion shares.", [shares])
+    assert check_summary(s, docs) == ["summary: '1.5 billion' but the quote says million"]
+
+
+@pytest.mark.parametrize("text", ["Rule 10b-5", "Rule 10b5-1", "10K filing", "a 3M product", "5B shares"])
+def test_a_letter_after_a_number_is_a_scale_only_after_a_currency_sign(text):
+    from daily_digest_desk.reasoning.summarize import _scaled
+    assert _scaled(text) == []
+
+
+@pytest.mark.parametrize("text, scale", [
+    ("$4.2B", "billion"), ("$981M", "million"), ("$4.2m", "million"), ("€1.2bn", "billion"),
+    ("1.2bn", "billion"), ("£3K", "thousand"), ("4.2 million", "million"), ("$4.2 Billion", "billion"),
+])
+def test_scale_words_that_count(text, scale):
+    from daily_digest_desk.reasoning.summarize import _scaled
+    assert [s for _, s, _ in _scaled(text)] == [scale]
+
+
+@pytest.mark.parametrize("wrong, quote", [
+    # The advisor's three: a small number elsewhere in the quote isn't a table cell.
+    ("It has a $12 billion facility.", "It has a $12 million facility. Its margin rose 12% this year."),
+    ("It raised $13 billion.", "It raised $13 million, and the deal closed on November 13, 2026."),
+    ("It had a loss of $5 billion.", "It had a loss of $5 million, and the board has 5 directors."),
+    ("It signed a $12 billion deal.", "It signed a $12 million deal for a 12-month term."),
+])
+def test_a_percentage_day_or_count_doesnt_hide_a_wrong_scale(wrong, quote):
+    k = KeyNumber(number="$1", quote=quote, source="EX-99.1")
+    problems = check_summary(summary(wrong, [k]), {"EX-99.1": quote})
+    assert [p for p in problems if "but the quote says million" in p], (wrong, problems)
+
+
+def test_a_cell_at_the_end_of_a_quote_is_still_a_cell():
+    # Each quote is read on its own: joined, "Revenues 1.5" would run into the
+    # next quote's first word and stop looking like a table cell.
+    docs = {"EX-99.1": "Revenues 1.5\nThe company repurchased 1.5 million shares."}
+    table = KeyNumber(number="$1.5 billion", quote="Revenues 1.5", source="EX-99.1")
+    shares = KeyNumber(number="1.5 million", quote="The company repurchased 1.5 million shares.", source="EX-99.1")
+    assert check_summary(summary("Revenue was $1.5 billion.", [table, shares]), docs) == []
+
+
+def test_table_cells_are_numbers_next_to_numbers_or_at_the_end():
+    from daily_digest_desk.reasoning.summarize import _table_values
+    assert _table_values("Revenues 146.1 980.8 571%") == {Decimal("146.1"), Decimal("980.8")}
+    assert _table_values("Total $ 4,213 $ 3,980") == {Decimal("4213"), Decimal("3980")}
+    assert _table_values("Net loss (5.2) 465.8 n/m") == {Decimal("5.2")}  # a negative in brackets; 465.8 is before a word
+    assert _table_values("margin rose 12%; closed November 13, 2026; 5 directors") == set()
+
+
+@pytest.mark.parametrize("text, scale", [("US$4.2B", "billion"), ("C$981M", "million"), ("A$5m", "million")])
+def test_a_glued_scale_after_a_prefixed_dollar_sign_counts(text, scale):
+    from daily_digest_desk.reasoning.summarize import _scaled
+    assert [(s, w) for _, s, w in _scaled(text)] == [(scale, text[text.index("$"):])]
+
+
+def test_a_canadian_amount_at_the_wrong_scale_fails():
+    quote = "It sold C$981M of notes."
+    k = KeyNumber(number="C$981M", quote=quote, source="EX-99.1")
+    assert check_summary(summary("It sold C$981 billion of notes.", [k]), {"EX-99.1": quote}) == [
+        "summary: '$981 billion' but the quote says million"]
+
+
+def test_a_value_the_quotes_give_at_both_scales_passes():
+    docs = {"EX-99.1": "Cash was $4.2 million. Debt was $4.2 billion."}
+    both = KeyNumber(number="$4.2 million; $4.2 billion", source="EX-99.1",
+                     quote="Cash was $4.2 million. Debt was $4.2 billion.")
+    assert check_summary(summary("Debt was $4.2 billion.", [both]), docs) == []
+
+
+# --- check_summary: the filing date from the first line ------------------------------
+
+from datetime import date  # noqa: E402
+
+FILED = date(2026, 11, 13)
+
+
+@pytest.mark.parametrize("written", [
+    "November 13, 2026", "Nov. 13, 2026", "Nov 13", "November 13th", "13 November 2026",
+    "2026-11-13", "11/13/2026", "NOVEMBER 13, 2026",
+])
+def test_the_filing_date_needs_no_quote(written):
+    s = summary(f"The company filed it on {written}; revenue was $57.0 billion.")
+    assert check_summary(s, DOCS, filed=FILED) == [], written
+
+
+def test_without_the_date_known_it_is_checked_like_any_number():
+    s = summary("The company filed it on November 13, 2026; revenue was $57.0 billion.")
+    assert check_summary(s, DOCS) == ["summary: '13' is not in any quote", "summary: '2026' is not in any quote"]
+
+
+def test_only_the_whole_filing_date_is_exempt():
+    for text, numbers in [
+        ("It has 13 directors.", ["13"]),                           # a 13 that isn't the date
+        ("Filed November 14, 2026.", ["14", "2026"]),               # another day
+        ("Filed November 13, 2025.", ["2025"]),                     # another year: the year is checked
+        ("It sold 130 units on November 130.", ["130", "130"]),     # not a date at all
+    ]:
+        problems = check_summary(summary(text, [REVENUE]), DOCS, filed=FILED)
+        assert problems == [f"summary: {n!r} is not in any quote" for n in numbers], text
+
+
+def test_a_bullet_can_give_the_filing_date_too():
+    s = Summary(summary="Revenue was $57.0 billion.", key_numbers=[REVENUE], changes=["Filed Nov. 13, 2026."])
+    assert check_summary(s, DOCS, filed=FILED) == []
+
+
+def test_summarize_checked_passes_new_yorks_filing_date():
+    # 2am UTC on the 14th is 9pm on the 13th in New York: the date in the first line.
+    late = Event(id="edgar:x", source="edgar", kind="8-K", ticker="NVDA", title="t", url="https://www.sec.gov/",
+                 occurred_at=datetime(2026, 11, 14, 2, 0, tzinfo=timezone.utc))
+    client = FakeClient(answer(parsed_output=summary("Filed November 13, 2026: revenue was $57.0 billion.")))
+    summarize_checked(late, DOCS, client)
+    assert len(client.calls) == 1  # passed first time: no retry
+    assert client.calls[0]["messages"][0]["content"].startswith("NVDA 8-K, filed 2026-11-13")
+
+
+def test_summarize_checked_uses_the_filing_date_on_the_retry_too():
+    late = Event(id="edgar:x", source="edgar", kind="8-K", ticker="NVDA", title="t", url="https://www.sec.gov/",
+                 occurred_at=datetime(2026, 11, 13, 15, 0, tzinfo=timezone.utc))
+    client = FakeClient(answer(parsed_output=summary("Revenue was $58.0 billion.")),
+                        answer(parsed_output=summary("Filed November 13, 2026: revenue was $57.0 billion.")))
+    summarize_checked(late, DOCS, client)
+    assert len(client.calls) == 2
+
+
+def test_the_prompt_says_the_filing_date_needs_no_quote():
+    prompt = " ".join(summarize_module.SYSTEM_PROMPT.split())
+    assert "The one exception is the filing date in the first line: it needs no quote." in prompt
+
+
+# --- check_summary: a digit in the company's name ------------------------------------
+
+# A 13D/A as EDGAR gives it: the name only in a data tag, the rest in sentences.
+HUT_DOCS = {"SCHEDULE 13D/A": (
+    "<issuerName>Hut 8 Corp.</issuerName>\n"
+    "The Reporting Person received 1,517,367 shares of Common Stock.\n"
+    "Hut 8 Corp. has 7 directors."
+)}
+SHARES = KeyNumber(number="1,517,367", source="SCHEDULE 13D/A",
+                   quote="The Reporting Person received 1,517,367 shares of Common Stock.")
+DIRECTORS = KeyNumber(number="7", source="SCHEDULE 13D/A", quote="Hut 8 Corp. has 7 directors.")
+
+
+def test_the_digit_in_the_company_name_is_not_a_number():
+    hut = summary("Michael Ho received 1,517,367 Hut 8 shares.", [SHARES])
+    assert check_summary(hut, HUT_DOCS, company="Hut 8 Corp.") == []
+    # Without the name: the bug every HUT summary hit on its first try.
+    assert check_summary(hut, HUT_DOCS) == ["summary: '8' is not in any quote"]
+
+
+def test_the_name_is_found_in_bullets_and_in_any_capitals():
+    hut = Summary(summary="HUT 8 reported a stake.", key_numbers=[SHARES],
+                  changes=["Hut 8's holder received 1,517,367 shares."])
+    assert check_summary(hut, HUT_DOCS, company="Hut 8 Corp.") == []
+
+
+def test_a_real_number_next_to_the_name_is_still_checked():
+    for text, number in [("Hut 8 sold 8 machines.", "8"), ("Hut 80 rigs.", "80")]:
+        problems = check_summary(summary(text, [SHARES]), HUT_DOCS, company="Hut 8 Corp.")
+        assert problems == [f"summary: {number!r} is not in any quote"], text
+
+
+def test_the_name_in_a_quote_doesnt_let_another_8_pass():
+    # Read as a number, "Hut 8" in the quote would vouch for any 8 in the summary.
+    wrong = summary("Hut 8 has 8 directors.", [DIRECTORS])
+    assert check_summary(wrong, HUT_DOCS, company="Hut 8 Corp.") == ["summary: '8' is not in any quote"]
+    assert check_summary(wrong, HUT_DOCS) == []  # the false pass, before the name was known
+    right = summary("Hut 8 has 7 directors.", [DIRECTORS])
+    assert check_summary(right, HUT_DOCS, company="Hut 8 Corp.") == []
+
+
+def test_the_quote_itself_is_still_checked_word_for_word():
+    bad = KeyNumber(number="7", source="SCHEDULE 13D/A", quote="Hut 9 Corp. has 7 directors.")
+    problems = check_summary(summary("It has 7 directors.", [bad]), HUT_DOCS, company="Hut 8 Corp.")
+    assert problems == ["SCHEDULE 13D/A: quote not found: 'Hut 9 Corp. has 7 directors.'"]
+
+
+@pytest.mark.parametrize("company, text, kept", [
+    ("Hut 8 Corp.", "Hut 8 shares", True),                 # legal ending dropped
+    ("1-800-Flowers.com, Inc.", "1-800-Flowers.com sales", True),
+    ("Nebius Group N.V.", "Nebius Group sold 2 sites", False),  # no digit: nothing to take out
+    ("8 Inc.", "8 shares", False),                          # no letter: would hide every 8
+    (None, "Hut 8 shares", False),
+    ("", "Hut 8 shares", False),
+])
+def test_name_pattern(company, text, kept):
+    from daily_digest_desk.reasoning.summarize import _name_pattern
+    pattern = _name_pattern(company)
+    assert (pattern is not None) == kept
+    if pattern:
+        assert _NUMBER.findall(pattern.sub(" ", text)) == []
+
+
 # --- summarize: with a fake client ---------------------------------------------------
 
 class FakeClient:
@@ -352,6 +637,29 @@ def test_summarize_sends_the_prompt_the_filing_and_the_shape():
     assert sent["output_format"] is Summary
     assert sent["output_config"] == {"effort": summarize_module.EFFORT}
     assert sent["fallbacks"] == "default"
+
+
+def test_the_prompt_states_the_limits_the_checks_use():
+    # The prompt is an f-string, so changing a limit changes what the model is told.
+    prompt = " ".join(summarize_module.SYSTEM_PROMPT.split())
+    assert f"at most {MAX_KEY_NUMBERS} key numbers" in prompt
+    assert f"up to {summarize_module.MAX_CHANGES} short" in prompt
+
+
+def test_the_schema_the_model_fills_uses_the_prompts_words_and_limits():
+    # The model reads field titles and descriptions next to the prompt.
+    props = Summary.model_json_schema()["properties"]
+    assert props["changes"]["title"] == "Key details"  # not "Changes": no "what changed" pull
+    assert f"Up to {summarize_module.MAX_CHANGES} \"key detail\" bullets" in props["changes"]["description"]
+    assert f"Up to {MAX_KEY_NUMBERS} key numbers" in props["key_numbers"]["description"]
+    number = Summary.model_json_schema()["$defs"]["KeyNumber"]["properties"]["number"]
+    assert "in digits" in number["description"]
+
+
+def test_a_summary_without_bullets_still_loads():
+    # Summaries saved before v3 have no "changes"; the model may also leave it out.
+    assert Summary(summary="Routine.", key_numbers=[]).changes == []
+    assert Summary.model_validate({"summary": "Routine.", "key_numbers": []}).changes == []
 
 
 @pytest.mark.parametrize("stop_reason, message", [
@@ -416,6 +724,16 @@ def test_retry_note_holds_the_failed_answer_and_every_problem():
     assert "- summary: '25' is not in any quote\n- 8-K: quote not found" in note
 
 
+def test_retry_note_asks_to_quote_a_missing_number_not_drop_it():
+    # The CleanSpark case: v2's note said "keep only numbers that are in your
+    # quotes", and the retry dropped $814.9M of bitcoin that was in the filing.
+    note = _retry_note(summary(), ["summary: '814.9' is not in any quote"])
+    assert "add a key number with the sentence from the documents that contains it" in note
+    assert "keep only numbers" not in note
+    assert f"already have {MAX_KEY_NUMBERS} key numbers" in note  # the limit, not a stale 5
+    assert "in your summary or bullets isn't in any quote" in note  # bullets get the same fix
+
+
 # --- summarize_checked: check, and retry once with the problems ----------------------
 
 BAD = summary("Revenue was $57.0 billion on October 25.")  # 25 is in no quote
@@ -426,6 +744,37 @@ def test_summarize_checked_passing_first_time_makes_one_call():
     client = FakeClient(answer(parsed_output=summary(), input_tokens=100, output_tokens=7))
     assert summarize_checked(event(), DOCS, client) == SummaryResult(summary(), "claude-opus-5-5", 100, 7)
     assert len(client.calls) == 1
+
+
+def hut_event(**fields):
+    return Event(
+        id="edgar:0001104659-26-127278", source="edgar", kind="SCHEDULE 13D/A", ticker="HUT",
+        occurred_at=datetime(2026, 11, 13, 23, 0, tzinfo=timezone.utc),
+        title="HUT SCHEDULE 13D/A (amended): Activist / >5% stake", url="https://www.sec.gov/",
+        fields=fields,
+    )
+
+
+HUT_SUMMARY = summary("Michael Ho received 1,517,367 Hut 8 shares.", [SHARES])
+
+
+def test_summarize_checked_uses_the_events_company_name():
+    client = FakeClient(answer(parsed_output=HUT_SUMMARY))
+    summarize_checked(hut_event(company="Hut 8 Corp."), HUT_DOCS, client)
+    assert len(client.calls) == 1  # "Hut 8" passed: no retry
+    # An event saved before names were collected: the old retry, then the old failure.
+    client = FakeClient(answer(parsed_output=HUT_SUMMARY), answer(parsed_output=HUT_SUMMARY))
+    with pytest.raises(SummaryError, match="'8' is not in any quote"):
+        summarize_checked(hut_event(), HUT_DOCS, client)
+
+
+def test_summarize_checked_uses_the_name_on_the_retry_too():
+    # The first try fails for another reason; the retry, with "Hut 8", must pass.
+    unquoted = summary("Michael Ho received 2,000,000 Hut 8 shares.", [SHARES])
+    client = FakeClient(answer(parsed_output=unquoted), answer(parsed_output=HUT_SUMMARY))
+    result = summarize_checked(hut_event(company="Hut 8 Corp."), HUT_DOCS, client)
+    assert result.summary == HUT_SUMMARY and len(client.calls) == 2
+    assert "'8'" not in client.calls[1]["messages"][0]["content"]  # not named as a problem
 
 
 def test_summarize_checked_retries_with_the_problems_and_adds_up_both_calls():
@@ -476,3 +825,11 @@ def test_dollars_at_the_models_prices():
     assert dollars(1_000_000, 0) == pytest.approx(summarize_module.INPUT_DOLLARS_PER_MTOK)
     assert dollars(0, 1_000_000) == pytest.approx(summarize_module.OUTPUT_DOLLARS_PER_MTOK)
     assert dollars(28_131, 496) == pytest.approx(0.122444)  # NVDA's live run: $0.12
+
+
+def test_the_prompt_names_the_note_trimming_adds():
+    # Same constant on both sides: the note the model is told about is the one it sees.
+    from daily_digest_desk.ingestion.edgar_text import CUT_NOTE, trim_documents
+    prompt = " ".join(summarize_module.SYSTEM_PROMPT.split())
+    assert f'ends with "{CUT_NOTE}"' in prompt
+    assert trim_documents([("8-K", "abcdef")], max_chars=3)["8-K"].endswith(CUT_NOTE)

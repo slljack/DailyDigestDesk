@@ -9,7 +9,7 @@ from daily_digest_desk.collect import (
     NOT_DUE, SUMMARY_CAP_DOLLARS, RunResult, Sources, SummaryRun, collect_edgar, collect_summaries,
     new_york_today, report_lines, run, run_is_due, write_digest,
 )
-from daily_digest_desk.ingestion.edgar_text import MAX_CHARS
+from daily_digest_desk.ingestion.edgar_text import CUT_NOTE, MAX_CHARS
 from daily_digest_desk.models import Reading
 from daily_digest_desk.output.digest import build_digest
 from daily_digest_desk.reasoning.summarize import PROMPT_VERSION, Summary, SummaryError, SummaryResult
@@ -505,7 +505,7 @@ def test_collect_summaries_fetches_by_accession_and_form_and_trims(store):
     summaries(store, fetch=fetch, summarize=summarize)
     assert fetch.calls == [("0001104659-26-129051", "424B5")]
     ((event_id, documents, client),) = summarize.calls
-    assert documents == {"424B5": "x" * MAX_CHARS}  # trimmed before the model sees it
+    assert documents == {"424B5": "x" * MAX_CHARS + "\n\n" + CUT_NOTE}  # trimmed before the model sees it
     assert client is CLIENT
 
 

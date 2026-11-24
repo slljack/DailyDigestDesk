@@ -40,7 +40,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,7 +49,7 @@ from daily_digest_desk.ingestion.edgar_events import filing_to_event
 from daily_digest_desk.ingestion.edgar_text import MAX_CHARS, fetch_filing_documents, trim_documents
 from daily_digest_desk.models import Event
 from daily_digest_desk.reasoning.summarize import (
-    EFFORT, MODEL, PROMPT_VERSION, KeyNumber, SummaryError, _normalize, check_summary, dollars,
+    EFFORT, MODEL, PROMPT_VERSION, KeyNumber, SummaryError, _normalize, check_summary, dollars, filed_date,
     summarize_checked,
 )
 
@@ -98,6 +98,16 @@ def find_filing(case: Case):
 # can load cases with no network.
 FilingFinder = Callable[[Case], object]
 DocumentFetcher = Callable[[str, str], list[tuple[str, str]]]
+NameLookup = Callable[[str], str]  # (ticker) -> SEC's name for its company
+
+
+def company_name(ticker: str) -> str:
+    """SEC's name for the ticker's company ("Hut 8 Corp."), as the daily run saves it."""
+    return _company(ticker).name
+
+
+def _save(saved: Path, data: dict) -> None:
+    saved.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def load_filing(
@@ -105,31 +115,35 @@ def load_filing(
     folder: Path = FILINGS,
     find: FilingFinder = find_filing,
     fetch: DocumentFetcher = fetch_filing_documents,
+    name: NameLookup | None = None,
 ) -> tuple[Event, list[tuple[str, str]]]:
     """The case's Event and its documents (untrimmed), from `folder` if they were
-    saved before, else from SEC, and then saved for next time."""
+    saved before, else from SEC, and then saved for next time.
+
+    The Event carries the company's name, as the daily run's do now. A copy saved
+    before names were collected (Nov 23) gets it the first time it's loaded, and
+    is saved again with it, so SEC is asked once. `name` defaults to company_name,
+    looked up when called, so tests can replace it."""
+    name = name or company_name
     saved = folder / f"{case.id}.json"
     if saved.exists():
         data = json.loads(saved.read_text(encoding="utf-8"))
         if data["accession"] != case.accession:
             # The case was pointed at another filing since: its old copy is stale.
             raise ValueError(f"{saved} is for {data['accession']}, not {case.accession}; delete it")
+        if "company" not in data["event"]["fields"]:
+            data["event"]["fields"]["company"] = name(case.ticker)
+            _save(saved, data)
         return Event.model_validate(data["event"]), [tuple(d) for d in data["documents"]]
 
-    event = filing_to_event(case.ticker, find(case))
+    event = filing_to_event(case.ticker, find(case), name(case.ticker))
     documents = fetch(case.accession, case.form)
     if not any(text for _, text in documents):
         # Nothing to summarize would make every run fail the same way: say so now.
         raise ValueError(f"{case.id}: the filing has no text to summarize")
 
     folder.mkdir(parents=True, exist_ok=True)
-    saved.write_text(
-        json.dumps(
-            {"accession": case.accession, "event": event.model_dump(mode="json"), "documents": documents},
-            ensure_ascii=False, indent=1,
-        ),
-        encoding="utf-8",
-    )
+    _save(saved, {"accession": case.accession, "event": event.model_dump(mode="json"), "documents": documents})
     return event, documents
 
 
@@ -154,13 +168,17 @@ class CountingClient:
         self.beta = SimpleNamespace(messages=SimpleNamespace(parse=parse))
 
 
-def first_try_problems(counting: CountingClient, documents: dict[str, str]) -> list[str]:
+def first_try_problems(
+    counting: CountingClient, documents: dict[str, str], company: str | None = None,
+    filed: date | None = None,
+) -> list[str]:
     """Why the first answer was retried: the code checks' problems with it, or []
     when there was no retry. The checks run again on the answer the API already
-    gave, so this costs nothing."""
+    gave, so this costs nothing. `company` as summarize_checked passes it, so the
+    reason shown is the one that caused the retry."""
     if counting.calls < 2 or counting.answers[0] is None:
         return []
-    return check_summary(counting.answers[0], documents)
+    return check_summary(counting.answers[0], documents, company, filed)
 
 
 def is_bare_quote(key_number: KeyNumber) -> bool:
@@ -254,7 +272,7 @@ def run_eval(
             report.failed.append(case.id)
             _append(errors, {
                 "id": case.id, "error": str(exc), "kind": "summary",
-                "first_try_problems": first_try_problems(counting, documents),
+                "first_try_problems": first_try_problems(counting, documents, event.fields.get("company"), filed_date(event)),
                 # What the model wrote each time (None: no answer, like a refusal),
                 # so a rejection can be judged: a real mistake, or a checker gap?
                 "answers": [a.model_dump() if a else None for a in counting.answers],
@@ -280,9 +298,10 @@ def run_eval(
             "title": event.title, "url": event.url,
             "summary": summary.summary,
             "key_numbers": [k.model_dump() for k in summary.key_numbers],
+            "changes": list(summary.changes),  # the "key detail" bullets (prompt v3)
             "model": result.model,  # the fallback model's name, if it answered instead
             "calls": counting.calls, "retried": counting.calls > 1,
-            "first_try_problems": first_try_problems(counting, documents),
+            "first_try_problems": first_try_problems(counting, documents, event.fields.get("company"), filed_date(event)),
             "words": len(summary.summary.split()),
             "key_number_count": len(summary.key_numbers),
             "bare_quotes": sum(is_bare_quote(k) for k in summary.key_numbers),
@@ -301,7 +320,13 @@ CHECKS: list[tuple[str, str]] = [
     ("faithful", "nothing added or stretched: no role, reason or claim the filing doesn't support"),
     ("main point", "the most important thing in the filing is in the summary, with the details a "
                    "reader needs; `partial` if the main point is there but something important is left out"),
-    ("plain English", "a beginner could follow it; jargon is avoided or explained"),
+    # Main point's other side: it catches too little, this catches too much. Added
+    # with v3's 6 bullets and checklists; v2 sheets don't have it.
+    ("focused", "every sentence and bullet earns its place: nothing routine or minor a holder "
+                "wouldn't miss; `partial` if one bullet or clause is filler"),
+    # Prompt v3 dropped definitions: finance terms are fine. v2 runs were graded
+    # against "a beginner could follow it; jargon is avoided or explained".
+    ("plain English", "clear, direct sentences; finance terms are fine"),
     ("no advice", "it informs and doesn't advise: no buy, sell, good news or worrying"),
 ]
 
@@ -309,17 +334,18 @@ CHECKS: list[tuple[str, str]] = [
 # pilot (Nov 21) graded HUT's summary a pass on main point though it left out the
 # deal's floor and cap, so a pass/fail score couldn't show a prompt that adds them.
 MARKS: dict[str, float] = {"pass": 1.0, "partial": 0.5, "fail": 0.0}
-PARTIAL_CHECKS = {"main point"}
+# Focused too: one filler bullet in a good summary isn't a fail.
+PARTIAL_CHECKS = {"main point", "focused"}
 
 
 def allowed_marks(check: str) -> list[str]:
-    """The marks a check can get: pass and fail, plus partial for main point."""
+    """The marks a check can get: pass and fail, plus partial for main point and focused."""
     return [m for m in MARKS if m != "partial" or check in PARTIAL_CHECKS]
 
 _SHEET_HEADER = """# Grading sheet: {run}
 
 For each case, read the summary, open the filing if you need to, and write
-`pass` or `fail` after each check (main point can also be `partial`). Add a
+`pass` or `fail` after each check (main point and focused can also be `partial`). Add a
 note when something fails or is partial: it's what a prompt change will be
 aimed at. Leave a mark blank until you've decided.
 
@@ -349,13 +375,19 @@ def _sheet_section(row: dict, case: Case | None) -> str:
     if case is not None and case.note:
         parts += [f"*Look for:* {_one_line(case.note)}", ""]
     parts += ["**Summary**", "", _quoted(row["summary"]), ""]
+    # .get: runs from before prompt v3 have no bullets. Quoted like the summary,
+    # one line each, so no bullet can look like a mark.
+    changes = row.get("changes", [])
+    if changes:
+        parts += ["**Key details**", "", _quoted("\n".join(f"- {_one_line(c)}" for c in changes)), ""]
     if row["key_numbers"]:
         parts += ["**Key numbers**", ""]
         for k in row["key_numbers"]:
             parts.append(f"- `{_one_line(k['number'])}` ({_one_line(k['source'])}): {_one_line(k['quote'])}")
         parts.append("")
     recorded = (
-        f"{row['words']} words · {row['key_number_count']} key numbers, {row['bare_quotes']} bare quotes · "
+        f"{row['words']} words · {len(changes)} bullets · "
+        f"{row['key_number_count']} key numbers, {row['bare_quotes']} bare quotes · "
         f"{row['calls']} call{'s' if row['calls'] != 1 else ''} · ${row['dollars']:.2f} · {row['model']}"
     )
     parts += [f"*Recorded:* {recorded}", ""]
@@ -410,20 +442,26 @@ def read_marks(text: str) -> tuple[Marks, list[str]]:
     ("- `5` ..."), so nothing it wrote can be read as a mark. A blank mark is
     None: not graded yet. A typo ("pas") or a partial where only pass/fail is
     allowed is a problem, reported with its case, so no mark is quietly dropped.
+
+    A check no case has a line for is left out: the sheet is older than the check
+    (v2 sheets have no "focused"), so it isn't 20 blanks. A check that some cases
+    have is blank in a case missing its line, so a deleted line still shows.
     """
+    known = {key for key, _ in CHECKS}
     marks: Marks = {}
     problems: list[str] = []
     current: str | None = None
     for line in text.splitlines():
         if line.startswith("## "):
             current = line[3:].strip()
-            marks[current] = {key: None for key, _ in CHECKS}
+            marks[current] = {}
             continue
         if current is None or not line.startswith("- "):
             continue
         check, colon, value = line[2:].partition(":")
-        if not colon or check not in marks[current]:
+        if not colon or check not in known:
             continue  # the note, or a key-number line
+        marks[current][check] = None
         mark = value.strip().lower()
         if not mark:
             continue
@@ -433,7 +471,8 @@ def read_marks(text: str) -> tuple[Marks, list[str]]:
             )
             continue
         marks[current][check] = mark
-    return marks, problems
+    on_sheet = [key for key, _ in CHECKS if any(key in m for m in marks.values())]
+    return {case_id: {key: m.get(key) for key in on_sheet} for case_id, m in marks.items()}, problems
 
 
 @dataclass
@@ -458,10 +497,12 @@ class CheckScore:
 
 
 def score_marks(marks: Marks) -> list[CheckScore]:
-    """Each check's score, in CHECKS' order."""
+    """Each check's score, in CHECKS' order, for the checks on the sheet."""
     scores = []
     for key, _ in CHECKS:
-        given = {case_id: m[key] for case_id, m in marks.items()}
+        if not any(key in m for m in marks.values()):
+            continue  # a check the sheet predates (see read_marks)
+        given = {case_id: m.get(key) for case_id, m in marks.items()}
         scores.append(CheckScore(
             check=key,
             counts={mark: sum(1 for v in given.values() if v == mark) for mark in allowed_marks(key)},
@@ -505,6 +546,14 @@ def score(run: Path) -> tuple[str, list[str]]:
             f"{sum(r['key_number_count'] for r in rows)} key numbers, {sum(r['bare_quotes'] for r in rows)} bare quotes · "
             f"{errors} failed (errors.jsonl)",
         ]
+        # The padding signal: bullets are for big filings, so most cases should have none.
+        with_bullets = [r["id"] for r in rows if r.get("changes")]
+        if with_bullets:
+            bullets = sum(len(r["changes"]) for r in rows if r.get("changes"))
+            lines.append(
+                f"Bullets in {len(with_bullets)} of {len(rows)} cases ({bullets} in all): "
+                + ", ".join(with_bullets)
+            )
     if marks:
         lines.append(f"With {len(marks)} cases, one case moves a check's score by {1 / len(marks):.0%}.")
     return "\n".join(lines), problems

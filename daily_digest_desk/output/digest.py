@@ -114,15 +114,29 @@ def _item(
 
 def _summary_html(summary: Summary) -> str:
     """The summary paragraph: the model's sentences, each key number with a tip
-    showing its quote. A key number the sentences don't contain goes at the end,
-    after "Also in the filing:", so no checked number is hidden."""
+    showing its quote, then its "key detail" bullets, if any, marked the same way.
+    A key number neither contains goes at the end of the paragraph, after "Also in
+    the filing:", so no checked number is hidden."""
     # The model's text is outside input too, like a title: escape it, then mark.
-    text, not_found = mark_key_numbers(html.escape(summary.summary), summary.key_numbers)
-    if not_found:
+    text, left = mark_key_numbers(html.escape(summary.summary), summary.key_numbers)
+    # The sentences first, then each bullet in turn, with the key numbers not used
+    # yet: a key number gets one tip, wherever it first appears.
+    bullets = []
+    for change in summary.changes:
+        if change.strip():
+            marked, left = mark_key_numbers(html.escape(change), left)
+            bullets.append(f"<li>{marked}</li>")
+    if left:
         # Each one marked on its own: the number is its whole text, so it's found.
-        also = ", ".join(mark_key_numbers(html.escape(k.number), [k])[0] for k in not_found)
+        also = ", ".join(mark_key_numbers(html.escape(k.number), [k])[0] for k in left)
         text += f' <span class="also">Also in the filing: {also}</span>'
-    return f'\n<p class="summary"><span class="ai-tag">AI summary</span> {text}</p>'
+    page = f'\n<p class="summary"><span class="ai-tag">AI summary</span> {text}</p>'
+    if bullets:
+        page += (
+            '\n<div class="changes"><span class="changes-tag">Key details</span>'
+            f'<ul>{"".join(bullets)}</ul></div>'
+        )
+    return page
 
 
 _RED_FLAG_TIP = html.escape(

@@ -61,9 +61,17 @@ CREATE TABLE IF NOT EXISTS summaries (
     prompt_version INTEGER NOT NULL,
     input_tokens   INTEGER NOT NULL,
     output_tokens  INTEGER NOT NULL,
-    inserted_at    TEXT NOT NULL
+    inserted_at    TEXT NOT NULL,
+    changes        TEXT NOT NULL DEFAULT '[]'   -- JSON: the "key detail" bullets (prompt v3)
 );
 """
+
+# Columns added after a table was first created: CREATE TABLE IF NOT EXISTS leaves
+# an existing table as it is, so Store adds these to an older database when it
+# opens it. Each goes at the end, where a fresh table has it too.
+_ADDED_COLUMNS = [
+    ("summaries", "changes", "TEXT NOT NULL DEFAULT '[]'"),  # Nov 22, 2026: prompt v3's bullets
+]
 
 
 def _iso(dt: datetime) -> str:
@@ -89,6 +97,16 @@ class Store:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path))
         self._conn.executescript(_SCHEMA)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Bring an older database up to _SCHEMA. Old rows get the column's default:
+        a summary saved before v3 gets '[]', no bullets. Safe to run on every open."""
+        with self._conn:
+            for table, column, definition in _ADDED_COLUMNS:
+                have = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+                if column not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         self._conn.close()
@@ -204,11 +222,15 @@ class Store:
         for the same event replaces the first (say, after a prompt change)."""
         key_numbers = json.dumps([kn.model_dump() for kn in summary.key_numbers])
         with self._conn:
+            # Columns named, not counted: a column added later goes at the end.
             self._conn.execute(
-                "INSERT OR REPLACE INTO summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO summaries (event_id, summary, key_numbers, model, "
+                "prompt_version, input_tokens, output_tokens, inserted_at, changes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event_id, summary.summary, key_numbers, model, prompt_version,
                     input_tokens, output_tokens, _iso(datetime.now(timezone.utc)),
+                    json.dumps(summary.changes),
                 ),
             )
 
@@ -221,10 +243,12 @@ class Store:
         event_ids = list(event_ids)
         placeholders = ", ".join("?" * len(event_ids))
         sql = (
-            "SELECT event_id, summary, key_numbers FROM summaries "
+            "SELECT event_id, summary, key_numbers, changes FROM summaries "
             f"WHERE event_id IN ({placeholders})"
         )
         return {
-            event_id: Summary(summary=text, key_numbers=json.loads(key_numbers))
-            for event_id, text, key_numbers in self._conn.execute(sql, event_ids)
+            event_id: Summary(
+                summary=text, key_numbers=json.loads(key_numbers), changes=json.loads(changes),
+            )
+            for event_id, text, key_numbers, changes in self._conn.execute(sql, event_ids)
         }

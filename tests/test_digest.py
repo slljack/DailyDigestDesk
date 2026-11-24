@@ -442,6 +442,53 @@ def test_a_red_flag_line_marks_its_key_numbers_too():
     assert '">$3 million</span>' in line
 
 
+# --- "key detail" bullets: under the summary, marked the same way ---------------
+
+def with_changes(text, changes, *key_numbers):
+    return Summary(summary=text, key_numbers=list(key_numbers), changes=list(changes))
+
+
+def test_bullets_go_in_a_list_under_the_summary():
+    line = _item(event("1"), summary=with_changes("Revenue rose.", ["A delay.", "A one-time item."]))
+    assert line.endswith(
+        "Revenue rose.</p>\n"
+        '<div class="changes"><span class="changes-tag">Key details</span>'
+        "<ul><li>A delay.</li><li>A one-time item.</li></ul></div></li>"
+    )
+
+
+def test_no_bullets_means_no_list():
+    # Summaries saved before v3, and routine filings, look as they always did.
+    line = _item(event("1"), summary=with_changes("Routine.", []))
+    assert "changes" not in line and line.endswith("Routine.</p></li>")
+
+
+def test_a_key_number_in_a_bullet_gets_its_tip_and_is_not_also_listed():
+    line = _item(event("1"), summary=with_changes(
+        "Revenue was $5 billion.", ["Spending was raised to $27 billion."],
+        kn("$5 billion"), kn("$27 billion", "Capital expenditures: approximately $27 billion"),
+    ))
+    assert '<li>Spending was raised to <span class="term keynum"' in line
+    assert 'data-tip="EX-99.1: “Capital expenditures: approximately $27 billion”">$27 billion</span>' in line
+    assert "Also in the filing" not in line  # it's on the page already, in the bullet
+
+
+def test_a_key_number_gets_one_tip_even_if_a_bullet_repeats_it():
+    line = _item(event("1"), summary=with_changes("Revenue was $5 billion.", ["Again $5 billion."], kn("$5 billion")))
+    assert line.count('class="term keynum"') == 1
+    assert "<li>Again $5 billion.</li>" in line
+
+
+def test_bullets_are_escaped():
+    line = _item(event("1"), summary=with_changes("Fine.", ['A <b>bold</b> & "quoted" claim.']))
+    assert "<li>A &lt;b&gt;bold&lt;/b&gt; &amp; &quot;quoted&quot; claim.</li>" in line
+
+
+def test_an_empty_bullet_is_left_out():
+    line = _item(event("1"), summary=with_changes("Fine.", ["  ", "Real."]))
+    assert "<ul><li>Real.</li></ul>" in line
+
+
 def test_page_shows_key_number_tips():
     page = build_digest(
         [event("aapl", ticker="AAPL")], NOW, ["AAPL"],
