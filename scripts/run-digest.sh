@@ -36,6 +36,20 @@ fi
 # API keys can show up in error messages (a failed request's url), and the log
 # is a plain file: redact them before writing.
 redacted=$(sed -E 's/(token|api_key)=[^&" ]+/\1=REDACTED/g; s/sk-ant-[A-Za-z0-9_-]+/REDACTED/g' <<< "$output")
+
+# Every source failed, so desk-collect wrote no page (HELD_BACK in collect.py) and
+# the next check tries again. Offline that's every 15 minutes: log three lines
+# (when, why, the first error), with no pop-up, so neither fills up.
+if [ "$status" -ne 0 ] && grep -q '^# No page:' <<< "$output"; then
+    {
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z')  exit $status"
+        grep -m1 '^# No page:' <<< "$redacted"
+        grep -m1 '^# ERROR' <<< "$redacted"
+        echo
+    } >> "$LOG"
+    exit "$status"
+fi
+
 {
     echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z')  exit $status"
     echo "$redacted"

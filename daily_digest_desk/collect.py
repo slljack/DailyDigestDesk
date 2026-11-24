@@ -394,6 +394,11 @@ def write_digest(
 # looks for them, so it can stop without a log entry or a pop-up.
 NOT_DUE = "# Not due"
 
+# The start of the line desk-collect prints when it held the page back (every
+# source failed). run-digest.sh looks for it, so it logs one short line instead
+# of a pop-up: offline, the scheduler retries every 15 minutes.
+HELD_BACK = "# No page"
+
 
 def run_is_due(store: Store, now: datetime) -> bool:
     """True when no page has been built since the latest 8am or 5pm New York slot.
@@ -435,6 +440,19 @@ class RunResult:
     digest_path: Path | None  # None if the page failed
     errors: dict[str, dict[str, str]]  # source -> {ticker, series or "page": message}
     summaries: SummaryRun | None = None  # None if skipped (no key) or it failed
+    held_back: bool = False  # True if every fetch failed, so no page was written
+
+
+def nothing_got_through(errors: dict[str, dict[str, str]], tried: dict[str, list[str]]) -> bool:
+    """True when every fetch failed: each source that ran failed for every name it tried.
+
+    Most likely there's no network (Nov 23, 2026: a run during the Mac's short
+    maintenance wake). A page then would only say "couldn't check", and writing it
+    would mark the slot done. `tried` maps a source to the names it fetched for;
+    with nothing tried, nothing failed.
+    """
+    pairs = [(source, name) for source, names in tried.items() for name in names]
+    return bool(pairs) and all(name in errors.get(source, {}) for source, name in pairs)
 
 
 def run(
@@ -453,10 +471,13 @@ def run(
     start: the page's cursor must be later than everything this run stored.
     """
     errors: dict[str, dict[str, str]] = {}
+    # What each fetch source asked for, to tell "nothing got through" from a partial failure.
+    tried: dict[str, list[str]] = {"edgar": tickers}
     new, errors["edgar"] = collect_edgar(store, tickers, today, lookback_days, sources.edgar)
 
     fred_readings: list[Reading] = []
     if sources.fred:
+        tried["fred"] = [*fred.DAILY_SERIES, *fred.RELEASES]
         fred_readings, fred_events, errors["fred"] = collect_fred(store, today, sources.fred)
         new += fred_events
 
@@ -465,12 +486,14 @@ def run(
         # The benchmark's close too, for the S&P 500 rule; dict.fromkeys drops it
         # if it's also a holding.
         quote_symbols = list(dict.fromkeys([*tickers, signals.BENCHMARK]))
+        tried["finnhub_quotes"] = quote_symbols
         quote_readings, errors["finnhub_quotes"] = collect_finnhub(
             store, quote_symbols, clock(), sources.quote,
         )
 
     earnings_events: list[Event] = []
     if sources.earnings:
+        tried["finnhub_earnings"] = tickers
         earnings_events, errors["finnhub_earnings"] = collect_finnhub_earnings(
             store, tickers, today, sources.earnings,
         )
@@ -496,18 +519,26 @@ def run(
 
     # Last, so the page has everything this run stored. A failed page leaves the
     # digest cursor alone, so the next run's page shows the same events again.
+    # The errors so far go on the page, so a failed source shows as "couldn't check"
+    # instead of looking like a quiet day.
+    # If nothing got through, no page: the digest cursor stays put, so the slot is
+    # still due and the next check (15 minutes later) tries again.
     digest_path: Path | None = None
-    build = functools.partial(build_digest, tickers=tickers)
-    try:
-        digest_path = write_digest(store, clock(), digest_dir, build)
+    held_back = nothing_got_through(errors, tried)
+    build = functools.partial(build_digest, tickers=tickers, errors=errors)
+    if held_back:
         errors["digest"] = {}
-    except Exception as exc:  # noqa: BLE001 — the collected data is already stored
-        log.warning("Digest page failed: %s", exc)
-        errors["digest"] = {"page": str(exc)}
+    else:
+        try:
+            digest_path = write_digest(store, clock(), digest_dir, build)
+            errors["digest"] = {}
+        except Exception as exc:  # noqa: BLE001 — the collected data is already stored
+            log.warning("Digest page failed: %s", exc)
+            errors["digest"] = {"page": str(exc)}
 
     return RunResult(
         new, fred_readings, quote_readings, earnings_events, signal_events, digest_path, errors,
-        summary_run,
+        summary_run, held_back,
     )
 
 
@@ -536,6 +567,8 @@ def report_lines(result: RunResult, sources: Sources) -> list[str]:
             lines.append(f"# Summary cap reached: {s.left} filing(s) left for the next run")
     if result.digest_path:
         lines.append(f"# Digest page: {result.digest_path.resolve()}")
+    if result.held_back:
+        lines.append(f"{HELD_BACK}: every source failed, so the next check tries again")
     for source, source_errors in result.errors.items():
         for name, msg in source_errors.items():
             lines.append(f"# ERROR {source} {name}: {msg}")

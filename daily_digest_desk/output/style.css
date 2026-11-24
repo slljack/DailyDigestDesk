@@ -11,6 +11,7 @@ h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; padding-bottom: 0.25rem;
      border-bottom: 1px solid var(--line); }
 .meta, .date { color: var(--muted); }
 .date { font-size: 0.85rem; margin-left: 0.4rem; white-space: nowrap; }
+.failed { color: var(--danger); margin: 0.25rem 0 0; }
 ul { padding-left: 1.2rem; margin: 0; }
 li { margin: 0.35rem 0; }
 a { color: var(--link); text-decoration: none; }

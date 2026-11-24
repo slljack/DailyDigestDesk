@@ -298,6 +298,93 @@ def test_run_collects_every_source_then_writes_the_page(store, tmp_path):
     }
 
 
+def test_run_page_names_the_sources_that_failed(store, tmp_path):
+    # Nov 23, 2026: EDGAR failed for one ticker, the other one worked. The page
+    # still shows the working one's filing, and says which ticker it couldn't check.
+    sources = Sources(edgar=FakeFetcher({"NVDA": [make_event("edgar:n", ticker="NVDA")]}, failing={"AAPL"}))
+    result = run(store, ["AAPL", "NVDA"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    page = result.digest_path.read_text(encoding="utf-8")
+    assert "Couldn't check: SEC filings (AAPL)." in page
+    assert "NVDA event edgar:n" in page
+
+
+def test_run_page_has_no_warning_when_every_source_worked(store, tmp_path):
+    sources = Sources(edgar=FakeFetcher({}), quote=FakeQuotes())
+    result = run(store, ["AAPL"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    assert 'class="failed"' not in result.digest_path.read_text(encoding="utf-8")
+
+
+# --- holding the page back when nothing got through ---------------------------------
+
+def no_network(*args, **kwargs):
+    raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+
+def offline_sources():
+    """Every source fails for everything, like the run of Nov 23, 2026, 5:48pm."""
+    return Sources(
+        edgar=FakeFetcher({}, failing={"AAPL", "NVDA"}),
+        fred=no_network, quote=no_network, earnings=no_network,
+    )
+
+
+def test_run_with_nothing_getting_through_writes_no_page_and_stays_due(store, tmp_path):
+    write_digest(store, MORNING, tmp_path, FakeBuilder())  # the 8am page
+    evening = datetime(2026, 11, 17, 17, 48, tzinfo=NEW_YORK)
+    result = run(store, ["AAPL", "NVDA"], TODAY, offline_sources(), tmp_path, clock=lambda: evening)
+
+    assert result.held_back and result.digest_path is None
+    assert result.errors["digest"] == {}  # not a page failure: held back on purpose
+    assert len(list(tmp_path.glob("*.html"))) == 2  # only the 8am page and latest.html
+    assert run_is_due(store, evening + timedelta(minutes=15))  # so the 6:03 check runs
+
+
+def test_run_writes_the_page_if_one_source_got_through(store, tmp_path):
+    # EDGAR and Finnhub down, but FRED answered: a partial failure, so a page (with
+    # the warning), and the slot is done.
+    sources = offline_sources()
+    sources.fred = lambda series_id, since, first_release=False: []
+    result = run(store, ["AAPL", "NVDA"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    assert not result.held_back and result.digest_path is not None
+    assert "Couldn't check: SEC filings (AAPL, NVDA); Finnhub prices" in result.digest_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("working", ["edgar", "fred", "quote", "earnings"])
+def test_run_writes_the_page_if_any_one_source_got_through(store, tmp_path, working):
+    # Each source on its own: one that isn't counted in `tried` would hold the page back.
+    answers = {
+        "edgar": FakeFetcher({}),
+        "fred": lambda series_id, since, first_release=False: [],
+        "quote": FakeQuotes(),
+        "earnings": lambda ticker, today: [],
+    }
+    sources = offline_sources()
+    setattr(sources, working, answers[working])
+    result = run(store, ["AAPL", "NVDA"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    assert not result.held_back and result.digest_path is not None
+
+
+def test_run_writes_the_page_if_one_ticker_got_through(store, tmp_path):
+    sources = offline_sources()
+    sources.edgar = FakeFetcher({}, failing={"AAPL"})
+    result = run(store, ["AAPL", "NVDA"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
+    assert not result.held_back and result.digest_path is not None
+
+
+def test_nothing_got_through():
+    tried = {"edgar": ["AAPL", "NVDA"], "fred": ["DFF"]}
+    every = {"edgar": {"AAPL": "x", "NVDA": "x"}, "fred": {"DFF": "x"}}
+    assert collect.nothing_got_through(every, tried)
+    assert not collect.nothing_got_through({**every, "fred": {}}, tried)  # FRED worked
+    assert not collect.nothing_got_through({**every, "edgar": {"AAPL": "x"}}, tried)  # NVDA worked
+    # A source that didn't run (no API key) isn't in `tried`, so it doesn't count either way.
+    assert collect.nothing_got_through({"edgar": every["edgar"]}, {"edgar": ["AAPL", "NVDA"]})
+    # Errors outside the fetch sources don't make anything "got through" or not.
+    assert collect.nothing_got_through({**every, "signals": {}, "summaries": {"e1": "x"}}, tried)
+    # Nothing tried (no holdings, no keys): nothing failed, so the page is written.
+    assert not collect.nothing_got_through({}, {"edgar": []})
+
+
 def test_run_fetches_the_benchmark_once_when_it_is_also_held(store, tmp_path):
     sources = Sources(edgar=FakeFetcher({}), quote=FakeQuotes())
     run(store, ["SPY", "AAPL"], TODAY, sources, tmp_path, clock=lambda: AFTER_CLOSE)
@@ -360,6 +447,13 @@ def test_report_lists_events_counts_page_and_errors(tmp_path):
         f"# Digest page: {(tmp_path / 'page.html').resolve()}",
         "# ERROR signals fred:DGS10 2026-11-17: boom",
     ]
+
+
+def test_report_says_when_the_page_was_held_back(store, tmp_path):
+    result = run(store, ["AAPL", "NVDA"], TODAY, offline_sources(), tmp_path, clock=lambda: AFTER_CLOSE)
+    lines = report_lines(result, offline_sources())
+    assert "# No page: every source failed, so the next check tries again" in lines
+    assert not any(line.startswith("# Digest page") for line in lines)
 
 
 # --- summaries inside a run ----------------------------------------------------------

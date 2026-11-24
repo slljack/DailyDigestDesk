@@ -148,6 +148,49 @@ def test_page_with_nothing_new():
     assert "<h2>" not in page
 
 
+# --- the warning for sources that failed -----------------------------------------
+
+def test_failed_sources_are_named_in_source_order_with_what_failed():
+    # Nov 23, 2026: a run during a maintenance wake, no network. Given out of order on
+    # purpose: the page lists them in _FETCH_SOURCES order, not the dict's.
+    errors = {
+        "finnhub_quotes": {"NVDA": "dns", "SPY": "dns"},
+        "edgar": {"CLSK": "dns", "NVDA": "dns"},
+        "fred": {"DFF": "dns"},
+    }
+    page = build_digest([], NOW, ["CLSK", "NVDA"], errors=errors)
+    assert (
+        '<p class="failed">⚠️ Couldn\'t check: SEC filings (CLSK, NVDA); FRED (DFF); '
+        "Finnhub prices (NVDA, SPY). This page may be missing news from them.</p>"
+    ) in page
+
+
+def test_no_warning_when_every_source_worked():
+    # collect.run puts an empty dict under each source that ran without errors.
+    errors = {"edgar": {}, "fred": {}, "finnhub_quotes": {}, "finnhub_earnings": {}, "digest": {}}
+    for page in [build_digest([], NOW, ["AAPL"], errors=errors), build_digest([], NOW, ["AAPL"])]:
+        assert 'class="failed"' not in page
+
+
+def test_only_fetch_sources_get_the_warning():
+    # A failed summary or signal isn't news missing from the page.
+    errors = {"summaries": {"e1": "timeout"}, "signals": {"DFF 2026-11-20": "x"}}
+    assert 'class="failed"' not in build_digest([], NOW, ["AAPL"], errors=errors)
+
+
+def test_the_warning_never_shows_the_error_message():
+    # A failed request's url carries its API key.
+    errors = {"finnhub_quotes": {"NVDA": "HTTP 500 for https://finnhub.io/api/v1/quote?token=SECRET"}}
+    page = build_digest([], NOW, ["NVDA"], errors=errors)
+    assert "Finnhub prices (NVDA)" in page
+    assert "SECRET" not in page and "finnhub.io" not in page
+
+
+def test_the_warning_escapes_names():
+    errors = {"edgar": {"<b>X</b>": "x"}}
+    assert "SEC filings (&lt;b&gt;X&lt;/b&gt;)" in build_digest([], NOW, ["X"], errors=errors)
+
+
 def test_page_is_a_whole_html_document():
     page = build_digest([event("1")], NOW, ["AAPL"])
     assert page.startswith("<!doctype html>")

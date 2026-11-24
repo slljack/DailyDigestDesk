@@ -127,6 +127,56 @@ def test_not_due_later_in_the_output_is_not_a_skip(tmp_path):
     assert ran.popup_shown()
 
 
+# --- held back: every source failed, no page -----------------------------------
+
+HELD_BACK_OUTPUT = (
+    "# 0 new event(s)\n"
+    "# No page: every source failed, so the next check tries again\n"
+    "# ERROR edgar CLSK: [Errno 8] nodename nor servname provided, or not known\n"
+    "# ERROR finnhub_quotes CLSK: https://finnhub.io/api/v1/quote?symbol=CLSK&token=SECRET\n"
+)
+
+
+def test_held_back_logs_three_lines_and_shows_no_popup(tmp_path):
+    ran = run_script(tmp_path, HELD_BACK_OUTPUT, 1, "--if-due")
+    assert ran.code == 1  # still a failure, for launchd
+    entry = ran.log.strip().splitlines()
+    assert len(entry) == 3 and entry[0].startswith("=== ") and entry[0].endswith("exit 1")
+    assert entry[1:] == [
+        "# No page: every source failed, so the next check tries again",
+        "# ERROR edgar CLSK: [Errno 8] nodename nor servname provided, or not known",
+    ]
+    assert not waited_for(ran.calls / "popup-done", seconds=0.5)
+
+
+def test_held_back_log_is_redacted(tmp_path):
+    # Here the first error is the one with the key in it.
+    output = HELD_BACK_OUTPUT.replace("# ERROR edgar CLSK: [Errno 8] nodename nor servname provided, or not known\n", "")
+    ran = run_script(tmp_path, output, 1)
+    assert "token=REDACTED" in ran.log and "SECRET" not in ran.log
+
+
+def test_no_page_with_exit_0_is_not_hidden(tmp_path):
+    # Shouldn't happen (a held-back run always has errors), but if it did, show it.
+    ran = run_script(tmp_path, "# No page: every source failed, so the next check tries again\n", 0)
+    assert ran.popup_shown()
+
+
+def test_no_page_inside_a_message_is_not_held_back(tmp_path):
+    # Only a line that starts with it counts.
+    page = a_page(tmp_path)
+    output = f"# Digest page: {page}\n# ERROR digest page: # No page: weird message\n"
+    ran = run_script(tmp_path, output, 1)
+    assert f"# Digest page: {page}" in ran.log
+    assert ran.popup_shown()
+
+
+def test_held_back_matches_what_desk_collect_prints():
+    # The script looks for these words: if collect.py's changed, this fails.
+    from daily_digest_desk.collect import HELD_BACK
+    assert f"grep -q '^{HELD_BACK}:'" in SCRIPT.read_text()
+
+
 # --- a run: log it, show the pop-up -------------------------------------------
 
 def test_a_run_with_a_page_is_logged_and_shown(tmp_path):

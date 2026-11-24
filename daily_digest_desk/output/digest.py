@@ -220,6 +220,35 @@ def _section(
     return f"<section>\n<h2>{html.escape(heading)}</h2>\n<ul>\n{body}\n</ul>\n</section>"
 
 
+# The sources that fetch from outside, as the page names them. Only these: if one
+# failed, the page may be missing news. The other error keys of collect.run
+# (signals, summaries, digest) are about this run's own work, not what's out there.
+_FETCH_SOURCES = {
+    "edgar": "SEC filings",
+    "fred": "FRED",
+    "finnhub_quotes": "Finnhub prices",
+    "finnhub_earnings": "Finnhub earnings dates",
+}
+
+
+def _failed_html(errors: Mapping[str, Mapping[str, str]]) -> str:
+    """A warning naming each source that failed and for what, or "" if none did.
+
+    Names only, never the messages: an error can carry a request's url, API key and all.
+    """
+    parts = [
+        f"{label} ({', '.join(errors[source])})"
+        for source, label in _FETCH_SOURCES.items()
+        if errors.get(source)
+    ]
+    if not parts:
+        return ""
+    return (
+        f'<p class="failed">⚠️ Couldn\'t check: {html.escape("; ".join(parts))}. '
+        "This page may be missing news from them.</p>"
+    )
+
+
 def build_digest(
     events: list[Event],
     now: datetime,
@@ -227,6 +256,7 @@ def build_digest(
     explainers: Explainers | None = None,
     glossary: Mapping[str, Mapping] | None = None,
     summaries: Mapping[str, Summary] | None = None,
+    errors: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str:
     """The whole page: Macro & Market first, then each holding in holdings order,
     then a hidden explainer card for each type on the page.
@@ -237,6 +267,8 @@ def build_digest(
     `explainers` and `glossary` default to the package's .toml files; tests pass their own.
     `summaries` maps an event id to its summary (store.summaries_for); an event
     missing from it just has no summary.
+    `errors` is this run's errors by source (collect.run); a fetch source that
+    failed gets a warning under the header.
     """
     if explainers is None:
         explainers = load_explainers()
@@ -281,6 +313,7 @@ def build_digest(
 <header>
 <h1>Daily digest</h1>
 <p class="meta">{when} · {count}</p>
+{_failed_html(errors or {})}
 </header>
 {body}
 </body>
