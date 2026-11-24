@@ -101,7 +101,7 @@ def _item(
 
     info = info_button(event, explainers)
 
-    below = _summary_html(summary) if summary else ""
+    below = (_summary_html(summary) if summary else "") + _insider_html(event)
 
     if is_red_flag(event):
         return (
@@ -110,6 +110,17 @@ def _item(
         )
     return f'<li>{title} <span class="date">{day}</span>{info}{below}</li>'
 
+
+
+def _insider_html(event: Event) -> str:
+    """A Form 4's line (form4.describe, saved at collection), under its title. Tagged
+    "From the form", not "AI summary": code wrote it from the form's own fields.
+    "" for any other event, and for a Form 4 saved before lines were made."""
+    line = event.fields.get("insider")
+    if not isinstance(line, str) or not line:
+        return ""
+    # From outside data (names, titles): escape it like a title.
+    return f'\n<p class="insider"><span class="form-tag">From the form</span> {html.escape(line)}</p>'
 
 
 def _summary_html(summary: Summary) -> str:

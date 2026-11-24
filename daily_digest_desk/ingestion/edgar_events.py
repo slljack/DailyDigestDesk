@@ -12,6 +12,7 @@ from datetime import date, datetime, time, timezone
 
 from daily_digest_desk.forms import PROSPECTUS_FORMS, SCHEDULE_13D_FORMS, SCHEDULE_13G_FORMS
 from daily_digest_desk.ingestion.edgar import _company
+from daily_digest_desk.ingestion.form4 import Form4Error, describe, parse_form4
 from daily_digest_desk.models import Event
 
 log = logging.getLogger(__name__)
@@ -90,9 +91,33 @@ def _occurred_at(filing) -> datetime:
     return datetime.combine(filed, time.min, tzinfo=timezone.utc)
 
 
-def filing_to_event(ticker: str, filing, company: str | None = None) -> Event:
+def insider_line(filing) -> str | None:
+    """A Form 4's plain line (form4.describe), read from its XML. None for any
+    other form, or if the XML can't be fetched or read.
+
+    One more SEC request per Form 4. Any failure is logged and swallowed, on
+    purpose: the line is extra, the filing is the news, so it never costs the
+    ticker its other filings. The price: a Form 4 saved without its line never
+    gets it later, since the store skips events it already has.
+    """
+    if _base_form(filing.form) != "4":
+        return None
+    try:
+        xml = filing.xml()
+        if not xml:
+            raise Form4Error("no XML in the filing")
+        return describe(parse_form4(xml))
+    except Exception as exc:  # noqa: BLE001 — see above
+        log.warning("Form 4 line failed for %s: %s", filing.accession_number, exc)
+        return None
+
+
+def filing_to_event(
+    ticker: str, filing, company: str | None = None, insider: str | None = None,
+) -> Event:
     """`company` is the ticker's name as SEC has it ("Hut 8 Corp."), saved so the
-    summary checker can tell the 8 in "Hut 8" from a number. None leaves it out."""
+    summary checker can tell the 8 in "Hut 8" from a number. `insider` is a Form 4's
+    line (insider_line). None leaves either out."""
     form = filing.form
     items = parse_items(getattr(filing, "items", None))
     amended = " (amended)" if form.endswith("/A") else ""
@@ -116,6 +141,7 @@ def filing_to_event(ticker: str, filing, company: str | None = None) -> Event:
             "filing_date": str(filing.filing_date),
             "items": items,
             **({"company": company} if company else {}),
+            **({"insider": insider} if insider else {}),
         },
     )
 
@@ -139,7 +165,9 @@ def fetch_edgar_events(
                 form=list(forms), filing_date=f"{since.isoformat()}:"
             )
             # The name is on the Company we already have: no extra SEC request.
-            events.extend(filing_to_event(ticker, f, company.name) for f in filings)
+            events.extend(
+                filing_to_event(ticker, f, company.name, insider_line(f)) for f in filings
+            )
         except Exception as exc:  # noqa: BLE001 — isolate per-ticker failures
             log.warning("EDGAR fetch failed for %s: %s", ticker, exc)
             errors[ticker] = str(exc)

@@ -73,6 +73,55 @@ def test_section_folds_two_or_more_insider_transactions_where_the_newest_was():
     assert page.count("<details>") == 1
 
 
+TETER = (
+    "On Nov 19, Teter Timothy S. (EVP, General Counsel and Sec) sold 30,000 shares, at an "
+    "average of $151.43 ($146.03 to $157.49), about $4.5 million. Under a 10b5-1 plan. "
+    "Holds 2,925,898 shares after."
+)
+
+
+def form4_event(id, line, hours_ago=1):
+    e = event(id, kind="4", ticker="NVDA", hours_ago=hours_ago, title=f"NVDA 4: {id}")
+    return e.model_copy(update={"fields": {"insider": line}})
+
+
+def test_item_shows_a_form4s_line_under_the_title_with_its_own_tag():
+    line = _item(form4_event("f1", TETER))
+    assert line == (
+        '<li><a href="https://sec.test/x">NVDA 4: f1</a> <span class="date">Nov 17</span>\n'
+        f'<p class="insider"><span class="form-tag">From the form</span> {html.escape(TETER)}</p></li>'
+    )
+    assert "AI summary" not in line  # code wrote it, not a model
+
+
+def test_item_without_a_line_is_as_before():
+    # Another form, or a Form 4 saved before lines were made, or a field that isn't text.
+    for e in [event("8k"), event("f1", kind="4"), form4_event("f2", ""), form4_event("f3", 42)]:
+        assert 'class="insider"' not in _item(e)
+
+
+def test_item_escapes_the_line():
+    assert "Doe &lt;b&gt;Jane&lt;/b&gt; (CEO)" in _item(form4_event("f1", "Doe <b>Jane</b> (CEO) sold 1 shares."))
+
+
+def test_the_line_comes_after_a_summary():
+    # A Form 4 doesn't get a summary today, but if one ever did, the summary leads.
+    page = _item(form4_event("f1", TETER), summary=Summary(summary="Sold shares.", key_numbers=[]))
+    assert page.index('class="summary"') < page.index('class="insider"')
+
+
+def test_folded_form4s_keep_their_lines():
+    page = _section("NVDA", [form4_event("f1", "First sold 1 shares.", 1), form4_event("f2", "Second sold 2 shares.", 2)])
+    assert visible_lines(page) == [
+        "NVDA",
+        "Insider transactions (2)",
+        "NVDA 4: f1 Nov 17",
+        "From the form First sold 1 shares.",
+        "NVDA 4: f2 Nov 17",
+        "From the form Second sold 2 shares.",
+    ]
+
+
 def test_section_one_noisy_event_is_not_folded():
     page = _section("NVDA", [event("f1", kind="4", ticker="NVDA", title="Form 4")])
     assert "<details>" not in page
