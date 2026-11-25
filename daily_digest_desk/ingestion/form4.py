@@ -57,7 +57,9 @@ class Form4:
 
 
 def _text(el: ET.Element, path: str) -> str:
-    return (el.findtext(path) or "").strip()
+    # Runs of spaces become one: a KEEL form (Nov 2026) has "Common  Shares" on one
+    # row and "Common Shares" on the next, which read as two kinds of share.
+    return " ".join((el.findtext(path) or "").split())
 
 
 def _flag(el: ET.Element, path: str) -> bool:
@@ -146,7 +148,9 @@ def parse_form4(xml: str | bytes) -> Form4:
 _DID = {
     ("P", True): "bought {} shares on the open market",
     ("S", False): "sold {} shares",
-    ("M", True): "got {} shares by exercising options",
+    # M is "exercise or conversion": options, but also stock units (HUT's PSUs, Nov
+    # 2026). describe names the derivative from the form when it can; this is the fallback.
+    ("M", True): "got {} shares by exercising or converting options or stock units",
     ("X", True): "got {} shares by exercising options",
     ("C", True): "got {} shares by converting another security",
     ("A", True): "received {} shares as an award",
@@ -240,6 +244,12 @@ def describe(form: Form4) -> str:
         n = _shares(sum(r.shares for r in rows))
         if (code, acquired) in _DID:
             clause = _DID[(code, acquired)].format(n)
+            # Shares from options or units: name them as the derivative table does.
+            converted = list(dict.fromkeys(
+                r.security for r in form.rows if r.derivative and r.code == code and r.security
+            ))
+            if code in ("M", "X") and converted:
+                clause = f"got {n} shares from their {' and '.join(converted)}"
         else:
             verb = {True: "acquired", False: "disposed of"}.get(acquired, "reported")
             clause = f"{verb} {n} shares (code {code})"

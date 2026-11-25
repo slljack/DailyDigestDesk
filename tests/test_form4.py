@@ -256,10 +256,10 @@ def test_an_option_exercise_is_counted_once_and_the_codes_keep_their_order():
         row("M", "1000", "20", acquired=True),
         row("S", "600", "50"),
         row("F", "400", "50"),
-        row("M", "1000", "20", acquired=False, derivative=True),
+        row("M", "1000", "20", acquired=False, derivative=True, security="Stock Option (Right to Buy)"),
         plan=True,
     ) == (
-        "On Nov 19, Doe Jane (CEO) got 1,000 shares by exercising options; "
+        "On Nov 19, Doe Jane (CEO) got 1,000 shares from their Stock Option (Right to Buy); "
         "sold 600 shares, at an average of $50.00, about $30,000; "
         "had 400 shares withheld to pay tax; with changes to options or other rights. "
         "Under a 10b5-1 plan."
@@ -361,3 +361,46 @@ def test_an_amendment_says_so():
 ])
 def test_about(dollars, text):
     assert _about(Decimal(dollars)) == text
+
+
+def test_shares_from_stock_units_say_so():
+    # HUT, Nov 2026: code M from Performance Stock Units, not options.
+    assert line(
+        row("M", "1517367", "0", acquired=True, after="7843779"),
+        row("M", "505789", "0", acquired=False, after="0", derivative=True, security="Performance Stock Units"),
+    ) == (
+        "On Nov 19, Doe Jane (CEO) got 1,517,367 shares from their Performance Stock Units; "
+        "with changes to options or other rights. Holds 7,843,779 shares after."
+    )
+
+
+def test_shares_from_two_kinds_of_derivative_name_both_once():
+    text = line(
+        row("M", "300", "0", acquired=True),
+        row("M", "100", "0", acquired=False, derivative=True, security="Restricted Stock Units"),
+        row("M", "200", "5", acquired=False, derivative=True, security="Stock Options"),
+        row("M", "50", "0", acquired=False, derivative=True, security="Restricted Stock Units"),
+    )
+    assert "got 300 shares from their Restricted Stock Units and Stock Options;" in text
+
+
+def test_without_a_derivative_row_the_words_dont_guess():
+    # M: exercise or conversion, so both. X is an option exercise by definition.
+    assert "got 10 shares by exercising or converting options or stock units." in line(row("M", "10", "0", acquired=True))
+    assert "got 10 shares by exercising options." in line(row("X", "10", "5", acquired=True))
+    # A derivative row of another code doesn't name the source of an M.
+    text = line(row("M", "10", "0", acquired=True), row("A", "99", "0", acquired=True, derivative=True, security="Stock Options"))
+    assert "by exercising or converting options or stock units" in text
+
+
+def test_extra_spaces_in_a_title_dont_split_a_holding():
+    # KEEL, Nov 2026: "Common  Shares" then "Common Shares", in one form.
+    xml = form4(
+        "<nonDerivativeTable>"
+        + transaction(code="P", after="94568").replace("Common Stock", "Common  Shares")
+        + transaction(code="P", after="109568").replace("Common Stock", "Common Shares")
+        + "</nonDerivativeTable>"
+    )
+    form = parse_form4(xml)
+    assert {r.security for r in form.rows} == {"Common Shares"}
+    assert describe(form).endswith("Holds 109,568 shares after.")
