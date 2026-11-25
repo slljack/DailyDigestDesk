@@ -39,9 +39,10 @@ def never(*args):
 # --- load_cases ----------------------------------------------------------------
 
 def test_the_approved_cases_load():
+    # 20 approved Nov 21, 2026, plus 2 live mistakes (CLSK, Nov 24) added Nov 25.
     cases = load_cases()
-    assert len(cases) == 20
-    assert len({c.accession for c in cases}) == 20
+    assert len(cases) == 22
+    assert len({c.accession for c in cases}) == 22
     assert all(c.tags and c.form and c.filed for c in cases)
 
 
