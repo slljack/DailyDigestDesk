@@ -381,13 +381,23 @@ def _scale_problems(where: str, text: str, quotes: list[str]) -> list[str]:
     ]
 
 
+# A space just inside a symbol a table keeps in its own cell: after "$" or "(",
+# before ")" or "%". A filing's HTML often puts "$", ")" and "%" in cells of their
+# own, so the text has "$ (112,965 )" where a reader sees "$(112,965)" (Nov 26, 2026:
+# 913 of them across the eval's 22 filings). Spaces anywhere else stay.
+_SYMBOL_SPACE = re.compile(r"(?<=[$(]) | (?=[)%])")
+
+
 def _normalize(text: str) -> str:
     """Every run of spaces, tabs and line breaks becomes one space, so a quote
     copied as one clean line still matches a filing that breaks it across lines.
+    And a space next to a symbol from its own table cell (_SYMBOL_SPACE) goes, so
+    "$377,701" matches a table's "$ 377,701", and the other way round.
 
-    Example: _normalize("up 62%\\n from  a year ago ") gives "up 62% from a year ago".
+    Example: _normalize("up 62 %\\n from  $ (1.2 ) a year ago ") gives
+    "up 62% from $(1.2) a year ago".
     """
-    return " ".join(text.split())
+    return _SYMBOL_SPACE.sub("", " ".join(text.split()))
 
 
 def filed_date(event: Event) -> date:

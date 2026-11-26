@@ -44,6 +44,20 @@ def test_normalize_makes_every_run_of_whitespace_one_space():
     assert _normalize("  up 62%\n from\t\ta  year ago \n") == "up 62% from a year ago"
 
 
+def test_normalize_joins_symbols_from_their_own_table_cells():
+    # CleanSpark's EBITDA row, as the text lays its cells out.
+    assert _normalize("$ (112,965 )   $ 377,701   30.5 %") == "$(112,965) $377,701 30.5%"
+    assert _normalize("( 16,506 )") == "(16,506)"
+    # Spaces first made one, then the symbol's taken off: a cell can end a line.
+    assert _normalize("$\n   377,701   %") == "$377,701%"
+
+
+def test_normalize_keeps_every_other_space():
+    # After ")" and before "$" or "(": words go on either side of those.
+    assert _normalize("a loss (net) of $5 and (b) 7 %") == "a loss (net) of $5 and (b) 7%"
+    assert _normalize("1 234") == "1 234"  # two numbers stay two numbers
+
+
 # --- _NUMBER: what counts as a number ------------------------------------------------
 
 def test_number_pattern_finds_amounts():
@@ -131,6 +145,25 @@ def test_a_routine_summary_with_no_numbers_passes():
 
 def test_labels_in_the_summary_are_not_numbers_to_check():
     assert check_summary(summary("In this 8-K, revenue was $57.0 billion."), DOCS) == []
+
+
+# One row of a table, laid out cell by cell: "$", ")" and "%" in cells of their own.
+TABLE_DOCS = {"EX-99.1": "Adjusted EBITDA   $ (112,965 )   $ 377,701\nMargin   30.5 %"}
+
+
+def test_a_table_quote_passes_however_its_symbols_are_spaced():
+    for quote in (
+        "Adjusted EBITDA $(112,965) $377,701",       # as a reader sees it
+        "Adjusted EBITDA $ (112,965 ) $ 377,701",    # copied from the text
+    ):
+        kn = KeyNumber(number="$112,965", quote=quote, source="EX-99.1")
+        assert check_summary(summary("Adjusted EBITDA was negative $112,965.", [kn]), TABLE_DOCS) == [], quote
+
+
+def test_a_table_quote_with_a_wrong_number_still_fails():
+    kn = KeyNumber(number="$112,966", quote="Adjusted EBITDA $(112,966)", source="EX-99.1")
+    problems = check_summary(summary("Adjusted EBITDA was negative $112,966.", [kn]), TABLE_DOCS)
+    assert problems == ["EX-99.1: quote not found: 'Adjusted EBITDA $(112,966)'"]
 
 
 def test_a_number_with_odd_spacing_still_matches_its_quote():
