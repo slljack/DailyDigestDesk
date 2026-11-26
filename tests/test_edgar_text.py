@@ -1,8 +1,10 @@
+import logging
+
 import pytest
 
 from daily_digest_desk.ingestion import edgar_text
 from daily_digest_desk.ingestion.edgar_text import (
-    CUT_NOTE, fetch_filing_documents, html_to_text, is_wanted, trim_documents,
+    CUT_NOTE, fetch_filing_documents, html_to_text, is_wanted, own_marks, trim_documents,
 )
 
 
@@ -45,6 +47,12 @@ WIDE_TABLE = (
 )
 
 
+def test_the_wide_table_has_no_mark_of_its_own():
+    # The tests below read any "…" in its text as a cut cell. That's only true
+    # while the table itself has none: change it, and this says why they fail.
+    assert own_marks(WIDE_TABLE) == 0
+
+
 def test_a_wide_table_keeps_every_number_whole():
     text = html_to_text(WIDE_TABLE)
     assert "…" not in text
@@ -58,8 +66,14 @@ def test_a_wide_table_keeps_its_label_whole():
 
 
 def test_at_80_the_same_table_is_cut():
-    # Why TEXT_WIDTH exists: the width edgartools uses on its own cuts this table.
-    assert "…" in html_to_text(WIDE_TABLE, width=80)
+    # Why WIDTHS exists: the width edgartools uses on its own cuts this table.
+    assert "…" in html_to_text(WIDE_TABLE, widths=(80,))
+
+
+def test_a_table_too_wide_for_the_first_width_gets_the_next():
+    text = html_to_text(WIDE_TABLE, widths=(80, 200))
+    assert text == html_to_text(WIDE_TABLE, widths=(200,))
+    assert "…" not in text
 
 
 def test_no_line_ends_in_spaces():
@@ -69,6 +83,101 @@ def test_no_line_ends_in_spaces():
 
 def test_the_words_come_through():
     assert "Adjusted EBITDA is reconciled below." in html_to_text(WIDE_TABLE)
+
+
+@pytest.fixture
+def layouts(monkeypatch):
+    """Lays any HTML out as the text given for each width in `layouts`, and records
+    the widths asked for in layouts["asked"]: so the choosing can be tested apart
+    from how edgartools draws a table."""
+    given = {"asked": []}
+
+    def fake_rich_to_text(document, width):
+        given["asked"].append(width)
+        return given[width]
+
+    monkeypatch.setattr(edgar_text, "rich_to_text", fake_rich_to_text)
+    return given
+
+
+def test_a_layout_with_nothing_cut_stops_the_search(layouts):
+    layouts.update({200: "a", 250: "b"})
+    assert html_to_text("<p>x</p>", widths=(200, 250)) == "a"
+    assert layouts["asked"] == [200]  # most filings: laid out once
+
+
+def test_a_tie_keeps_the_narrowest(layouts):
+    # A table cut the same at every width: going wider only makes the text longer.
+    layouts.update({200: "a …", 250: "b …", 300: "c …"})
+    assert html_to_text("<p>x</p>", widths=(200, 250, 300)) == "a …"
+
+
+def test_the_filings_own_mark_is_not_a_cut(layouts, caplog):
+    caplog.set_level(logging.WARNING)
+    layouts.update({200: "strong … and rising", 250: "wider"})
+    assert html_to_text("<p>strong … and rising</p>", widths=(200, 250)) == "strong … and rising"
+    assert layouts["asked"] == [200]  # not laid out wider for it
+    assert caplog.records == []       # and no warning
+
+
+def test_an_own_mark_and_a_cut_cell(layouts, caplog):
+    # The sentence's "…" stays at every width; the cell's goes at 250.
+    caplog.set_level(logging.WARNING)
+    layouts.update({200: "strong … | Unreali…", 250: "strong … | Unrealized"})
+    assert html_to_text("<p>strong …</p>", widths=(200, 250)) == "strong … | Unrealized"
+    assert caplog.records == []
+
+
+def test_fewer_marks_than_the_filing_shows_is_not_a_cut(layouts, caplog):
+    # The sentence with the "…" didn't come through (a table too wide can vanish):
+    # that's no cut cell, and no reason to go wider or to warn "-1 cut".
+    caplog.set_level(logging.WARNING)
+    layouts.update({200: "a b", 250: "wider"})
+    assert html_to_text("<p>a … b</p>", widths=(200, 250)) == "a b"
+    assert layouts["asked"] == [200]
+    assert caplog.records == []
+
+
+def test_a_mark_in_a_tag_is_not_the_filings_own(layouts):
+    # In an attribute it's never laid out, so a "…" in the text is a cut.
+    layouts.update({200: "x …", 250: "x"})
+    assert html_to_text('<p title="…">x</p>', widths=(200, 250)) == "x"
+
+
+def test_own_marks_counts_what_the_filing_shows():
+    assert own_marks("<p>strong … and rising</p>") == 1
+    assert own_marks("<p>a &hellip; b &#8230; c &#x2026;</p>") == 3  # the ways HTML writes it
+    assert own_marks("<p>three dots... are not it</p>") == 0
+
+
+def test_own_marks_skips_what_is_never_shown():
+    assert own_marks('<p title="…">x</p>') == 0
+    assert own_marks('<script>x = "…"</script><style>/* … */</style><p>x</p>') == 0
+    assert own_marks("<ix:header><ix:hidden>…</ix:hidden></ix:header><p>x</p>") == 0
+    # Entities are read after tags are taken off: the filing shows the text
+    # <a title="…"> here, "…" included; read first, it would be taken off as a tag.
+    assert own_marks('<p>&lt;a title="…"&gt;</p>') == 1
+
+
+def test_the_fewest_cuts_win(layouts):
+    # Not always the widest: a table can draw worse at a wider width.
+    layouts.update({200: "… … …", 250: "…", 300: "… …"})
+    assert html_to_text("<p>x</p>", widths=(200, 250, 300)) == "…"
+
+
+def test_still_cut_at_every_width_warns(layouts, caplog):
+    caplog.set_level(logging.WARNING)
+    layouts.update({200: "… …", 250: "…"})
+    html_to_text("<p>x</p>", widths=(200, 250), name="acc EX-99.3")
+    assert [r.getMessage() for r in caplog.records] == [
+        "acc EX-99.3: 1 cut table cell(s) left at every width up to 250; kept width 250"
+    ]
+
+
+def test_nothing_cut_no_warning(caplog):
+    caplog.set_level(logging.WARNING)
+    html_to_text(WIDE_TABLE)
+    assert caplog.records == []
 
 
 def test_empty_html_gives_empty_text():
@@ -180,6 +289,14 @@ def test_fetch_keeps_a_plain_text_file_as_it_is(fake_edgar):
 def test_fetch_gives_empty_text_for_an_empty_html_file(fake_edgar):
     fake_edgar["acc"] = FakeFiling([FakeAttachment("EX-99.1", "", html=True)])
     assert fetch_filing_documents("acc", "8-K") == [("EX-99.1", "")]
+
+
+def test_fetch_warns_with_the_filing_and_document(fake_edgar, layouts, caplog):
+    caplog.set_level(logging.WARNING)
+    layouts.update({w: "cut …" for w in edgar_text.WIDTHS})
+    fake_edgar["0001045810-26-000088"] = FakeFiling([FakeAttachment("EX-99.3", "<p>x</p>", html=True)])
+    fetch_filing_documents("0001045810-26-000088", "8-K")
+    assert caplog.records[0].getMessage().startswith("0001045810-26-000088 EX-99.3: 1 cut")
 
 
 def test_fetch_raises_for_an_unknown_accession_number(fake_edgar):
