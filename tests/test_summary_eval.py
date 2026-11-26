@@ -271,12 +271,14 @@ def test_a_retry_is_counted(tmp_path):
     assert (row["calls"], row["retried"]) == (2, True)
     assert (row["input_tokens"], row["output_tokens"]) == (300, 16)  # both calls
     assert row["first_try_problems"] == BAD_PROBLEMS  # why it was retried
+    assert row["rejected_answer"] == BAD.model_dump()  # what it was retried for
 
 
 def test_no_retry_means_no_first_try_problems(tmp_path):
     run_eval([case("a")], tmp_path, FakeClient(answer(parsed_output=summary())), load=lambda c: FILING)
     [row] = lines(tmp_path / "results.jsonl")
     assert row["first_try_problems"] == []
+    assert row["rejected_answer"] is None
 
 
 def test_a_summary_that_fails_goes_to_errors_with_its_cost(tmp_path):

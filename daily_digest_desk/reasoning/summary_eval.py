@@ -302,6 +302,12 @@ def run_eval(
             "model": result.model,  # the fallback model's name, if it answered instead
             "calls": counting.calls, "retried": counting.calls > 1,
             "first_try_problems": first_try_problems(counting, documents, event.fields.get("company"), filed_date(event)),
+            # What the model wrote the first time, if it was retried: the problems
+            # above can then be read in context. The final answer is the row itself.
+            "rejected_answer": (
+                counting.answers[0].model_dump()
+                if counting.calls > 1 and counting.answers[0] is not None else None
+            ),
             "words": len(summary.summary.split()),
             "key_number_count": len(summary.key_numbers),
             "bare_quotes": sum(is_bare_quote(k) for k in summary.key_numbers),
