@@ -11,15 +11,24 @@ section by name instead (not built yet).
 
 Three steps, each with one job:
     is_wanted               the rule: which files matter (logic only)
+      (html_to_text         how one HTML file becomes text, wide enough for tables)
     fetch_filing_documents  download the wanted files' text (talks to EDGAR)
     trim_documents          cut each to its beginning (logic only)
 """
 
 from __future__ import annotations
 
-from edgar import find
+from edgar import Document, find
+from edgar.richtools import rich_to_text
 
 from daily_digest_desk.ingestion.edgar import _ensure_identity
+
+# How wide a line of text is when a filing's HTML is laid out. edgartools'
+# Attachment.text() uses 80 (a terminal's width), and a table too wide for it has
+# its cells cut: CleanSpark's Adjusted EBITDA "(112,965)" came out as "(11…", so the
+# model saw only the first digits of most earnings tables (found Nov 25, 2026: 3,558
+# cut cells across the eval's earnings filings). At 200 nearly all fit.
+TEXT_WIDTH = 200
 
 # Per document. Was 40,000 (a starting guess); the v2 eval (Nov 22, 2026) found
 # NBIS's shareholder letter cut at 40% of its 98,083 characters, losing its capex,
@@ -39,12 +48,25 @@ def is_wanted(form: str, doc_type: str) -> bool:
     return doc_type == form or doc_type.startswith("EX-99")
 
 
+def html_to_text(html: str, width: int = TEXT_WIDTH) -> str:
+    """A filing's HTML as plain text, laid out `width` characters wide, with the
+    spaces that pad each line to that width taken off. They're most of the text
+    otherwise (41,294 characters for CleanSpark's release, 22,624 without), and
+    they'd count against MAX_CHARS."""
+    if not html.strip():
+        return ""  # Document.parse gives None for it, which prints as the word "None"
+    text = rich_to_text(Document.parse(html), width=width)
+    return "\n".join(line.rstrip() for line in text.splitlines())
+
+
 def fetch_filing_documents(accession_number: str, form: str) -> list[tuple[str, str]]:
     """The wanted files of a filing as (document_type, text), in the filing's order.
 
     The check comes before the download: each file's text is its own request
     to SEC, and most files in a filing (XBRL data, images) are never needed.
     A wanted file with no text (an exhibit that's only pictures) gets "", not None.
+    An HTML file goes through html_to_text, so its tables aren't cut; any other
+    file keeps edgartools' own text().
     """
     _ensure_identity()
     filing = find(accession_number)
@@ -54,7 +76,10 @@ def fetch_filing_documents(accession_number: str, form: str) -> list[tuple[str, 
     docs = []
     for attachment in filing.attachments:
         if is_wanted(form, attachment.document_type):
-            text = attachment.text() or ""  # None (no text) becomes ""
+            if attachment.is_html():
+                text = html_to_text(attachment.content)
+            else:
+                text = attachment.text() or ""  # None (no text) becomes ""
             docs.append((attachment.document_type, text))
     return docs
 
