@@ -495,6 +495,54 @@ def test_a_value_the_quotes_give_at_both_scales_passes():
     assert check_summary(summary("Debt was $4.2 billion.", [both]), docs) == []
 
 
+# --- check_summary: a scaled number at its full size ---------------------------------
+
+def _both_ways(written, quote, quote_number):
+    """The problems with `written`, checked by each comparison: once as a key number
+    against `quote`, and once in a summary sentence, with `quote_number` (the
+    quote's own number) as the key number."""
+    docs = {"EX-99.1": quote}
+    as_key = KeyNumber(number=written, quote=quote, source="EX-99.1")
+    as_sentence = KeyNumber(number=quote_number, quote=quote, source="EX-99.1")
+    return (
+        check_summary(summary("The quarter closed.", [as_key]), docs),
+        check_summary(summary(f"It was {written}.", [as_sentence]), docs),
+    )
+
+
+@pytest.mark.parametrize("written, quote, quote_number", [
+    ("$1.25 billion", "The notes total $1,250,000,000.", "$1,250,000,000"),
+    ("$981M", "The notes total $981,000,000.", "$981,000,000"),
+    ("$1,250,000,000", "The notes total $1.25 billion.", "$1.25 billion"),  # the other way round
+    ("$1,250 million", "The notes total $1.25 billion.", "$1.25 billion"),  # both scaled
+    ("$30,711 million", "Revenue 30,711 28,286", "30,711"),  # a table cell: its plain value still matches
+])
+def test_a_scaled_number_matches_at_its_exact_full_size(written, quote, quote_number):
+    assert _both_ways(written, quote, quote_number) == ([], [])
+
+
+@pytest.mark.parametrize("written, quote, quote_number, digits", [
+    ("$1.2 billion", "The notes total $1,234,000,000.", "$1,234,000,000", "1.2"),  # rounded
+    ("$1.25 million", "The notes total $1,250,000,000.", "$1,250,000,000", "1.25"),  # the wrong scale
+])
+def test_a_full_size_that_isnt_exact_fails(written, quote, quote_number, digits):
+    assert _both_ways(written, quote, quote_number) == (
+        [f"EX-99.1: {written!r} is not in its quote: {quote!r}"],
+        [f"summary: {digits!r} is not in any quote"],
+    )
+
+
+def test_a_scale_goes_only_with_the_number_its_written_next_to():
+    from daily_digest_desk.reasoning.summarize import _number_forms
+    assert _number_forms("$1.25 billion, up 1.25%") == [
+        ("1.25", {Decimal("1.25"), Decimal("1250000000")}), ("1.25", {Decimal("1.25")})]
+    # In a summary: the full size passes; a percentage with the same digits doesn't.
+    quote = "Debt was $1,250,000,000. Its margin was 2%."
+    k = KeyNumber(number="$1,250,000,000", quote=quote, source="EX-99.1")
+    s = summary("Debt was $1.25 billion; its margin was 1.25%.", [k])
+    assert check_summary(s, {"EX-99.1": quote}) == ["summary: '1.25' is not in any quote"]
+
+
 # --- check_summary: the filing date from the first line ------------------------------
 
 from datetime import date  # noqa: E402

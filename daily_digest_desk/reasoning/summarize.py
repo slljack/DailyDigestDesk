@@ -306,11 +306,6 @@ def _value(number: str) -> Decimal:
     return Decimal(number.replace(",", ""))
 
 
-def _values(text: str) -> set[Decimal]:
-    """Every number in `text`, as values. Example: _values("up 62% to $1,200") == {62, 1200}."""
-    return {_value(number) for number in _NUMBER.findall(text)}
-
-
 # A number and the scale word right after it: "$4.2 billion", "980.8 million",
 # "$981M", "$1.2bn". Only a scale written next to the number: a table's "in
 # millions" heading is too far away to know, so a table line has none. A glued
@@ -342,6 +337,41 @@ def _scaled(text: str) -> list[tuple[Decimal, str, str]]:
         start = m.start() - (m.start() > 0 and text[m.start() - 1] in "$€£")
         found.append((_value(number), _SCALE_NAMES.get(word, word), text[start:m.end()].strip()))
     return found
+
+
+_POWERS = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12}
+
+
+def _number_forms(text: str) -> list[tuple[str, set[Decimal]]]:
+    """Each number in `text`, as written, with the values it can match: its own,
+    and its full size if a scale word follows it.
+
+    Example: in "$1.25 billion, up 1.25%", "1.25" can be 1.25 or 1250000000, and
+    the second "1.25" only 1.25: the scale goes with the number it's written
+    next to, found by where it starts in the text, not by its value. Exact, so
+    "$1.2 billion" is never 1,234,000,000.
+    """
+    # Where each scaled number starts, and its power of ten.
+    power_at = {}
+    for m in _SCALED.finditer(text):
+        group = next(g for g in ("a", "b", "c") if m.group(g))
+        word = (m.group("w") or m.group("l") or m.group("bn")).lower()
+        power_at[m.start(group)] = _POWERS[_SCALE_NAMES.get(word, word)]
+
+    forms = []
+    for m in _NUMBER.finditer(text):
+        value = _value(m.group(0))
+        values = {value}
+        if m.start() in power_at:
+            values.add(value * 10 ** power_at[m.start()])  # Decimal times int: exact
+        forms.append((m.group(0), values))
+    return forms
+
+
+def _all_values(text: str) -> set[Decimal]:
+    """Every value a number in `text` can match (_number_forms), in one set.
+    Example: _all_values("$1.25 billion, up 3%") == {1.25, 1250000000, 3}."""
+    return {value for _, values in _number_forms(text) for value in values}
 
 
 def _table_values(quote: str) -> set[Decimal]:
@@ -540,11 +570,14 @@ def check_summary(
             problems.append(f"{kn.source}: quote not found: {kn.quote!r}")
 
         # Compare the numbers, not the text: "$980.8 million (571%)" passes if
-        # both 980.8 and 571 are in the quote, however the model wrote them.
-        numbers = _values(kn.number)
+        # both 980.8 and 571 are in the quote, however the model wrote them. A
+        # scaled number may match at full size, either way round: "$1.25 billion"
+        # and "$1,250,000,000" are the same number.
+        numbers = _number_forms(kn.number)
+        quote_values = _all_values(numbers_text(kn.quote))
         if not numbers:
             problems.append(f"{kn.source}: {kn.number!r} has no number in it")
-        elif not numbers <= _values(numbers_text(kn.quote)):
+        elif any(not values & quote_values for _, values in numbers):
             problems.append(f"{kn.source}: {kn.number!r} is not in its quote: {kn.quote!r}")
         else:
             problems += _scale_problems(kn.source, kn.number, [numbers_text(kn.quote)])
@@ -552,12 +585,13 @@ def check_summary(
     # The summary-numbers check, for the sentences and each bullet. Compare whole
     # numbers, not text: "2" is inside "62" as text, but it isn't the same number.
     quotes = [numbers_text(kn.quote) for kn in summary.key_numbers]
-    quoted = _values(" ".join(quotes))
+    # Each quote read on its own, so a scale word is never taken from the next one.
+    quoted = set().union(*(_all_values(quote) for quote in quotes))
     texts = [("summary", summary.summary)]
     texts += [(f"bullet {i}", change) for i, change in enumerate(summary.changes, start=1)]
     for where, text in texts:
-        for number in _NUMBER.findall(numbers_text(text, written=True)):
-            if _value(number) not in quoted:
+        for number, values in _number_forms(numbers_text(text, written=True)):
+            if not values & quoted:
                 problems.append(f"{where}: {number!r} is not in any quote")
         # Same value, wrong scale: "$4.2 billion" from a quote saying "$4.2 million".
         problems += _scale_problems(where, numbers_text(text, written=True), quotes)
